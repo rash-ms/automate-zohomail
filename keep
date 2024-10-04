@@ -1,0 +1,95 @@
+# # SILVER LAYER KLAVIYO CAMPAIGN TABLE 
+# for box_name in list(CONFIG['brand_dict'][REGION].keys()):
+#     read_klaviyo_campaign_bronze_table = CONFIG['brand_dict'][REGION][box_name]['bronze_klaviyo_campaign_table_name']
+#     read_klaviyo_campaign_list_bronze_table = CONFIG['brand_dict'][REGION][box_name]['bronze_klaviyo_campaign_list_table_name']
+#     read_klaviyo_campaign_utm_param_bronze_table = CONFIG['brand_dict'][REGION][box_name]['bronze_klaviyo_campaign_utm_param_table_name']
+#     read_klaviyo_list_bronze_table = CONFIG['brand_dict'][REGION][box_name]['bronze_klaviyo_list_table_name']
+
+#     is_fivetran = CONFIG["brand_dict"][REGION][box_name]["is_fivetran"]
+
+#     print(f"Start processing for tables: 'campaign_bronze', 'campaign_list_bronze', 'list_bronze', 'campaign_utm_param_bronze' for brand {box_name}")
+
+#     BRAND, MARKET = get_brand_market(box_name)
+
+#     # KLAVIYO CAMPAIGN
+#     df_read_klaviyo_campaign = read_selected_column(read_klaviyo_campaign_bronze_table, box_name)
+#     df_klaviyo_campaign = (df_read_klaviyo_campaign
+#                            .withColumnRenamed('updated', 'updated_at')
+#                            .withColumnRenamed('created', 'created_at')
+#                            .filter(~col('status').isin("Draft", 'draft')))
+
+#     # KLAVIYO CAMPAIGN_LIST
+#     df_read_klaviyo_campaign_list = read_selected_column(read_klaviyo_campaign_list_bronze_table, box_name)
+#     df_klaviyo_campaign_list = (df_read_klaviyo_campaign_list
+#                                      .withColumnRenamed('list_id', 'camp_list_id')
+#                                      .drop('_fivetran_deleted', '_fivetran_synced', 'product_types'))
+
+#     # KLAVIYO CAMPAIGN_UTM_PARAM
+#     df_read_klaviyo_campaign_utm_param = read_selected_column(read_klaviyo_campaign_utm_param_bronze_table, box_name)
+#     df_klaviyo_campaign_utm_param = (df_read_klaviyo_campaign_utm_param
+#                                              .withColumnRenamed('campaign_id', 'utm_campaign_id')
+#                                              .withColumnRenamed('name', 'utm_name')
+#                                              .drop('_fivetran_deleted', '_fivetran_synced', 'product_types')) # consider to use config for the drop table
+
+#     # KLAVIYO LIST
+#     df_read_klaviyo_list_df = read_selected_column(read_klaviyo_list_bronze_table, box_name)
+#     df_klaviyo_list_df = (df_read_klaviyo_list_df
+#                           .withColumnRenamed('id', 'list_id')
+#                           .drop('_fivetran_deleted', '_fivetran_synced', 'product_types'))
+
+#     # KLAVIYO CAMPAIGN SILVER TABLE PROCESSING
+#     join_klaviyo_campaign_and_list = inner_join(df_klaviyo_campaign, df_klaviyo_campaign_list, 'id', 'campaign_id')
+#     join_klaviyo_campaign_list_utm_param = inner_join(join_klaviyo_campaign_and_list, df_klaviyo_campaign_utm_param, 'id', 'utm_campaign_id')
+#     df_join_klaviyo_campaign = inner_join(join_klaviyo_campaign_list_utm_param, df_klaviyo_list_df, 'camp_list_id', 'list_id')
+#     df_klaviyo_drop_col = df_join_klaviyo_campaign.drop('klaviyo_list_id', 'utm_campaign_id', 'campaign_id', 'camp_list_id') 
+#     df_klaviyo_sel_col = (df_klaviyo_drop_col.selectExpr(*klaviyo_selected_columns))
+        
+#     table_path = get_silver_path(klaviyo_tbl_name)  
+#     print(table_path)
+#     create_control_table(control_table, read_klaviyo_campaign_bronze_table, table_path, BRAND, MARKET)
+#     create_silver_table(df_klaviyo_sel_col, klaviyo_tbl_name, table_path, REGION)
+#     process_silver_table(df_klaviyo_sel_col, klaviyo_tbl_name, control_table, read_klaviyo_campaign_bronze_table, klaviyo_campaign_merge_conditions, REGION)
+
+#     print(f"######### End processing for table '{read_klaviyo_campaign_bronze_table}' for brand {box_name} #########\n")
+
+-----------------------
+# # SILVER LAYER KLAVIYO PERSON TABLE 
+# for box_name in list(CONFIG['brand_dict'][REGION].keys()):
+#     read_klaviyo_person_bronze_table = CONFIG['brand_dict'][REGION][box_name]['bronze_klaviyo_person_table_name']
+#     is_fivetran = CONFIG["brand_dict"][REGION][box_name]["is_fivetran"]
+#     is_missing_column = CONFIG["brand_dict"][REGION][box_name]["is_missing_column"]
+#     print(f'start processing for table {read_klaviyo_person_bronze_table} for brand {box_name}')
+
+#     BRAND, MARKET = get_brand_market(box_name)
+
+#     df_klaviyo_person_df = read_selected_column(read_klaviyo_person_bronze_table, box_name)
+
+#     if is_missing_column == True:
+#         sms_marketing_schema = """STRUCT< consent: STRING, method: STRING,
+#                                   method_detail: STRING, timestamp: STRING >"""
+
+#         df_klaviyo_person_df = (df_klaviyo_person_df
+#               .withColumn("locale", lit(None).cast('string'))
+#               .withColumn("location", F.struct(col("location.*"), lit(None).cast("string").alias("ip")))
+#               .withColumn("subscriptions",
+#                   F.struct(col("subscriptions.email").alias("email"), 
+#                   F.struct(from_json(col("subscriptions.sms.marketing"), sms_marketing_schema).alias("marketing")
+#                       ).alias("sms")
+#                   )
+#               )
+#             )
+
+#     klaviyo_person_sel_col= df_klaviyo_person_df.selectExpr(*klaviyo_person_selected_columns)
+#     df_email_decrypt = (klaviyo_person_sel_col.withColumn('decrypted_email', decrypt_udf(F.col('email')))
+#               .withColumn('email_hash', F.sha2(F.col('decrypted_email'), 256))
+#               .withColumn('email_md5_hash', F.upper(F.md5('decrypted_email')))
+#               .drop('decrypted_email'))
+    
+
+#     table_path = get_silver_path(klaviyo_person_tbl_name)  
+#     print(table_path)
+#     create_control_table(control_table, read_klaviyo_person_bronze_table, table_path, BRAND, MARKET)
+#     create_silver_table(df_email_decrypt, klaviyo_person_tbl_name, table_path,REGION)
+#     process_silver_table(df_email_decrypt, klaviyo_person_tbl_name, control_table, read_klaviyo_person_bronze_table, klaviyo_person_merge_conditions, REGION)
+
+#     print(f"######### End processing for table '{read_klaviyo_person_bronze_table}' for brand {box_name} #########\n")
