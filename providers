@@ -1,0 +1,8 @@
+provider "aws" {
+  region = "us-east-1"  # Set your region
+}
+
+variable "bucket_name" {
+  type        = string
+  description = "Name of the existing S3 bucket to access"
+}
