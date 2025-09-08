@@ -1,0 +1,131 @@
+name: Build release from Issue Form
+on:
+  issues:
+    types: [opened, edited, labeled]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: read
+
+jobs:
+  build:
+    if: contains(github.event.issue.labels.*.name, 'release-request')
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+
+      - name: Configure git
+        run: |
+          git config user.name  "release-bot"
+          git config user.email "release-bot@users.noreply.github.com"
+
+      - name: Install gh
+        uses: cli/gh-action@v2
+
+      - name: Read and validate form values (fail if missing)
+        id: form
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ISSUE: ${{ github.event.issue.number }}
+        run: |
+          gh api repos/$REPO/issues/$ISSUE --jq '.body' > body.txt
+
+          # helpers
+          get_field () { awk "/^### $1/{flag=1;next}/^### /{flag=0}flag" body.txt | sed '/^\s*$/d' | head -n 1 | xargs; }
+
+          GH_USERNAME=$(get_field "Your GitHub username (exact)")
+          BASE=$(get_field "Base branch PRs target")
+          STATE=$(get_field "PR state to include")
+          LABEL_SUFFIX=$(get_field "Your unique label suffix")
+          EXTRA=$(awk '/^### Extra PR numbers or URLs/{flag=1;next}/^### |^\*\*/{flag=0}flag' body.txt \
+                 | sed 's/.*pull\///' | sed 's/[^0-9].*$//' | grep -E '^[0-9]+$' || true)
+
+          for var in GH_USERNAME BASE STATE LABEL_SUFFIX; do
+            eval v=\$$var
+            if [ -z "$v" ]; then
+              echo "::error::$var is required in the issue form"; exit 1
+            fi
+          done
+
+          # Enforce that the opener matches the username (prevents triggering for others)
+          OPENER="${{ github.event.issue.user.login }}"
+          if [ "$OPENER" != "$GH_USERNAME" ]; then
+            echo "::error::Issue opener ($OPENER) must match GH username ($GH_USERNAME)"; exit 1
+          fi
+
+          READY_LABEL="ready-for-prod-$LABEL_SUFFIX"
+          echo "GH_USERNAME=$GH_USERNAME" >> $GITHUB_OUTPUT
+          echo "BASE=$BASE" >> $GITHUB_OUTPUT
+          echo "STATE=$STATE" >> $GITHUB_OUTPUT
+          echo "READY_LABEL=$READY_LABEL" >> $GITHUB_OUTPUT
+          echo "EXTRA=$(echo "$EXTRA" | paste -sd, -)" >> $GITHUB_OUTPUT
+
+      - name: Find matching PRs by username+base+unique label
+        id: find
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_USERNAME: ${{ steps.form.outputs.GH_USERNAME }}
+          BASE: ${{ steps.form.outputs.BASE }}
+          STATE: ${{ steps.form.outputs.STATE }}
+          READY_LABEL: ${{ steps.form.outputs.READY_LABEL }}
+        run: |
+          # Build gh filters
+          ARGS=(--author "$GH_USERNAME" --base "$BASE" --state "$STATE" --label "$READY_LABEL")
+
+          PRS=$(gh pr list "${ARGS[@]}" --json number,title,url \
+              --jq 'map(.number)|join(",")')
+          if [ -z "$PRS" ]; then
+            echo "::error::No PRs found for author=$GH_USERNAME base=$BASE state=$STATE label=$READY_LABEL"; exit 1
+          fi
+          echo "PRS=$PRS" >> $GITHUB_OUTPUT
+          echo "Found PRs: $PRS"
+
+      - name: Combine with any extra PRs
+        id: combine
+        run: |
+          A="${{ steps.find.outputs.PRS }}"
+          B="${{ steps.form.outputs.EXTRA }}"
+          LIST=$(printf "%s\n%s\n" "$A" "$B" | tr ',' '\n' | grep -E '^[0-9]+$' | sort -u | paste -sd, -)
+          if [ -z "$LIST" ]; then
+            echo "::error::No PRs to include after combining."; exit 1
+          fi
+          echo "PR_LIST=$LIST" >> $GITHUB_OUTPUT
+          echo "Including PRs: $LIST"
+
+      - name: Create release branch from main
+        id: mk
+        run: |
+          git fetch origin main
+          BR="release/$(date +%Y-%m-%d-%H%M)-${{ github.event.issue.number }}"
+          git switch -c "$BR" origin/main
+          echo "BRANCH=$BR" >> $GITHUB_OUTPUT
+
+      - name: Merge selected PRs (squash commits)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRS: ${{ steps.combine.outputs.PR_LIST }}
+        run: |
+          IFS=, read -ra arr <<< "$PRS"
+          for PR in "${arr[@]}"; do
+            PR=$(echo $PR | xargs)
+            TITLE=$(gh pr view "$PR" --json title --jq .title)
+            HEAD=$(gh pr view "$PR" --json headRefName --jq .headRefName)
+            echo "Including PR #$PR — $TITLE (branch: $HEAD)"
+            git fetch origin "$HEAD"
+            git merge --squash "origin/$HEAD"
+            git commit -m "Include PR #$PR: $TITLE"
+          done
+
+      - name: Push release branch and open PR to main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ steps.mk.outputs.BRANCH }}
+        run: |
+          git push -u origin "$BRANCH"
+          gh pr create --base main --head "$BRANCH" \
+            --title "Release: $BRANCH" \
+            --body "Built from PRs by @${{ steps.form.outputs.GH_USERNAME }} with label `${{ steps.form.outputs.READY_LABEL }}` targeting `${{ steps.form.outputs.BASE }}`."
