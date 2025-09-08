@@ -1,0 +1,53 @@
+name: Promote to Prod
+description: Build a release from PRs authored by you that target the base branch and have your unique label.
+title: "Release: <short description>"
+labels: ["release-request"]
+body:
+  - type: input
+    id: gh_username
+    attributes:
+      label: Your GitHub username (exact)
+      placeholder: "e.g. octocat"
+    validations:
+      required: true
+
+  - type: input
+    id: base
+    attributes:
+      label: Base branch PRs target (e.g. stage)
+      placeholder: "stage"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: state
+    attributes:
+      label: PR state to include
+      options: ["open", "merged"]
+    validations:
+      required: true
+
+  - type: input
+    id: label_suffix
+    attributes:
+      label: Your unique label suffix (will be prefixed with ready-for-prod-)
+      placeholder: "your-username"
+      description: "Example: if you type `octocat`, the workflow looks for label `ready-for-prod-octocat`"
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra_prs
+    attributes:
+      label: Extra PR numbers or URLs to include (optional)
+      placeholder: "123\nhttps://github.com/org/repo/pull/456"
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: Confirm
+      options:
+        - label: "I confirm I own the PRs under this username and have applied the label `ready-for-prod-<suffix>` to each PR."
+          required: true
