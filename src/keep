@@ -12,7 +12,7 @@ resource "aws_lambda_function" "my_lambda" {
     }
   }
 }
-
+# hello
 resource "aws_apigatewayv2_api" "lambda_api" {
   name          = "lambda_api"
   protocol_type = "HTTP"
