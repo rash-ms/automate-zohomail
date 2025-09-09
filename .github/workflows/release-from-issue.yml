@@ -142,9 +142,10 @@ jobs:
         id: mk
         run: |
           git fetch origin main
-          BR="release/$(date +%Y-%m-%d-%H%M)-${{ github.event.issue.number }}"
+          # Unique name: date+time (to the second) + issue + run id
+          BR="release/$(date +%Y-%m-%d-%H%M%S)-${{ github.event.issue.number }}-${{ github.run_id }}"
           git switch -c "$BR" origin/main
-          echo "BRANCH=$BR" >> $GITHUB_OUTPUT
+          echo "BRANCH=$BR" >> "$GITHUB_OUTPUT"
 
       - name: Merge selected PRs (squash commits)
         env:
@@ -168,6 +169,11 @@ jobs:
           BRANCH: ${{ steps.mk.outputs.BRANCH }}
         run: |
           git push -u origin "$BRANCH"
-          gh pr create --base main --head "$BRANCH" \
-            --title "Release: $BRANCH" \
-            --body "Built from PRs by @${{ steps.form.outputs.GH_USERNAME }} with label \`${{ steps.form.outputs.READY_LABEL }}\` targeting \`${{ steps.form.outputs.BASE }}\`."
+          # If a PR already exists for this head, gh will fail; handle gracefully:
+          if gh pr view --head "$BRANCH" --json number >/dev/null 2>&1; then
+            echo "PR already exists for $BRANCH"
+          else
+            gh pr create --base main --head "$BRANCH" \
+              --title "Release: $BRANCH" \
+              --body "Built from PRs by @${{ steps.form.outputs.GH_USERNAME }} with label \`${{ steps.form.outputs.READY_LABEL }}\` targeting \`${{ steps.form.outputs.BASE }}\`."
+          fi
