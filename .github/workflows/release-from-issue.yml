@@ -1,4 +1,5 @@
 name: Build release from Issue Form
+
 on:
   issues:
     types: [opened, edited, labeled]
@@ -32,41 +33,58 @@ jobs:
       - name: Read and validate form values (fail if missing)
         id: form
         env:
-          GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           ISSUE: ${{ github.event.issue.number }}
         run: |
-          gh api repos/$REPO/issues/$ISSUE --jq '.body' > body.txt
-
-          # helpers
-          get_field () { awk "/^### $1/{flag=1;next}/^### /{flag=0}flag" body.txt | sed '/^\s*$/d' | head -n 1 | xargs; }
-
+          # Save the raw Markdown body exactly as GitHub sent it
+          # (Editor may flag the expression below; it's valid at runtime.)
+          cat > body.txt <<'EOF'
+          ${{ github.event.issue.body }}
+          EOF
+      
+          echo "---- first 60 lines of body.txt ----"
+          sed -n '1,60p' body.txt || true
+          echo "------------------------------------"
+      
+          get_field () {
+            awk -v hdr="### $1" '
+              $0==hdr {flag=1; next}
+              /^### / {flag=0}
+              flag
+            ' body.txt | sed '/^[[:space:]]*$/d' | head -n 1 | xargs
+          }
+      
           GH_USERNAME=$(get_field "Your GitHub username (exact)")
           BASE=$(get_field "Base branch PRs target")
           STATE=$(get_field "PR state to include")
           LABEL_SUFFIX=$(get_field "Your unique label suffix")
-          EXTRA=$(awk '/^### Extra PR numbers or URLs/{flag=1;next}/^### |^\*\*/{flag=0}flag' body.txt \
-                 | sed 's/.*pull\///' | sed 's/[^0-9].*$//' | grep -E '^[0-9]+$' || true)
-
+      
+          EXTRA=$(awk -v hdr="### Extra PR numbers or URLs" '
+            $0==hdr {flag=1; next}
+            /^### / {flag=0}
+            flag
+          ' body.txt | sed 's/.*pull\///' | sed 's/[^0-9].*$//' | grep -E '^[0-9]+$' || true)
+      
           for var in GH_USERNAME BASE STATE LABEL_SUFFIX; do
             eval v=\$$var
             if [ -z "$v" ]; then
               echo "::error::$var is required in the issue form"; exit 1
             fi
           done
-
-          # Enforce that the opener matches the username (prevents triggering for others)
+      
           OPENER="${{ github.event.issue.user.login }}"
           if [ "$OPENER" != "$GH_USERNAME" ]; then
             echo "::error::Issue opener ($OPENER) must match GH username ($GH_USERNAME)"; exit 1
           fi
-
+      
           READY_LABEL="ready-for-prod-$LABEL_SUFFIX"
-          echo "GH_USERNAME=$GH_USERNAME" >> $GITHUB_OUTPUT
-          echo "BASE=$BASE" >> $GITHUB_OUTPUT
-          echo "STATE=$STATE" >> $GITHUB_OUTPUT
-          echo "READY_LABEL=$READY_LABEL" >> $GITHUB_OUTPUT
-          echo "EXTRA=$(echo "$EXTRA" | paste -sd, -)" >> $GITHUB_OUTPUT
+          {
+            echo "GH_USERNAME=$GH_USERNAME"
+            echo "BASE=$BASE"
+            echo "STATE=$STATE"
+            echo "READY_LABEL=$READY_LABEL"
+            echo "EXTRA=$(echo "$EXTRA" | paste -sd, -)"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Find matching PRs by username+base+unique label
         id: find
@@ -115,7 +133,7 @@ jobs:
         run: |
           IFS=, read -ra arr <<< "$PRS"
           for PR in "${arr[@]}"; do
-            PR=$(echo $PR | xargs)
+            PR=$(echo "$PR" | xargs)
             TITLE=$(gh pr view "$PR" --json title --jq .title)
             HEAD=$(gh pr view "$PR" --json headRefName --jq .headRefName)
             echo "Including PR #$PR — $TITLE (branch: $HEAD)"
@@ -132,4 +150,4 @@ jobs:
           git push -u origin "$BRANCH"
           gh pr create --base main --head "$BRANCH" \
             --title "Release: $BRANCH" \
-            --body "Built from PRs by @${{ steps.form.outputs.GH_USERNAME }} with label `${{ steps.form.outputs.READY_LABEL }}` targeting `${{ steps.form.outputs.BASE }}`."
+            --body "Built from PRs by @${{ steps.form.outputs.GH_USERNAME }} with label \`${{ steps.form.outputs.READY_LABEL }}\` targeting \`${{ steps.form.outputs.BASE }}\`."
