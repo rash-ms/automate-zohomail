@@ -1,4 +1,5 @@
 name: Build release from Issue Form
+
 on:
   issues:
     types: [opened, edited, labeled]
@@ -32,41 +33,78 @@ jobs:
       - name: Read and validate form values (fail if missing)
         id: form
         env:
-          GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           ISSUE: ${{ github.event.issue.number }}
         run: |
-          gh api repos/$REPO/issues/$ISSUE --jq '.body' > body.txt
-
-          # helpers
-          get_field () { awk "/^### $1/{flag=1;next}/^### /{flag=0}flag" body.txt | sed '/^\s*$/d' | head -n 1 | xargs; }
-
+          # Write the exact Issue Form body
+          cat > body.txt <<'EOF'
+          ${{ github.event.issue.body }}
+          EOF
+      
+          # Helper: capture the first non-empty line after a header whose text STARTS with $1
+          get_field () {
+            awk -v prefix="$1" '
+              BEGIN{flag=0}
+              # Detect headers that start with "### "
+              /^###[[:space:]]/{
+                # Strip the leading "### " and any leading spaces
+                line=$0
+                sub(/^###[[:space:]]*/,"",line)
+                # If the header begins with the prefix (literal, not regex), start capturing
+                if (index(line, prefix)==1) { flag=1; next } else { flag=0 }
+              }
+              # While in the right section, print lines until the next header
+              flag { print }
+            ' body.txt | sed '/^[[:space:]]*$/d' | head -n 1 | xargs
+          }
+      
+          # Same idea, but return the whole section for parsing EXTRA PRs
+          get_section () {
+            awk -v prefix="$1" '
+              BEGIN{flag=0}
+              /^###[[:space:]]/{
+                line=$0
+                sub(/^###[[:space:]]*/,"",line)
+                if (index(line, prefix)==1) { flag=1; next } else { flag=0 }
+              }
+              flag { print }
+            ' body.txt
+          }
+      
+          # Read fields by their header PREFIX (ignore any hints in parentheses)
           GH_USERNAME=$(get_field "Your GitHub username (exact)")
           BASE=$(get_field "Base branch PRs target")
           STATE=$(get_field "PR state to include")
           LABEL_SUFFIX=$(get_field "Your unique label suffix")
-          EXTRA=$(awk '/^### Extra PR numbers or URLs/{flag=1;next}/^### |^\*\*/{flag=0}flag' body.txt \
-                 | sed 's/.*pull\///' | sed 's/[^0-9].*$//' | grep -E '^[0-9]+$' || true)
-
+      
+          # Optional list of PRs/URLs
+          EXTRA=$(get_section "Extra PR numbers or URLs" \
+            | sed 's/.*pull\///' \
+            | sed 's/[^0-9].*$//' \
+            | grep -E '^[0-9]+$' || true)
+      
+          # Fail if any required field is missing
           for var in GH_USERNAME BASE STATE LABEL_SUFFIX; do
             eval v=\$$var
             if [ -z "$v" ]; then
               echo "::error::$var is required in the issue form"; exit 1
             fi
           done
-
-          # Enforce that the opener matches the username (prevents triggering for others)
+      
+          # Opener must match the GH username
           OPENER="${{ github.event.issue.user.login }}"
           if [ "$OPENER" != "$GH_USERNAME" ]; then
             echo "::error::Issue opener ($OPENER) must match GH username ($GH_USERNAME)"; exit 1
           fi
-
+      
           READY_LABEL="ready-for-prod-$LABEL_SUFFIX"
-          echo "GH_USERNAME=$GH_USERNAME" >> $GITHUB_OUTPUT
-          echo "BASE=$BASE" >> $GITHUB_OUTPUT
-          echo "STATE=$STATE" >> $GITHUB_OUTPUT
-          echo "READY_LABEL=$READY_LABEL" >> $GITHUB_OUTPUT
-          echo "EXTRA=$(echo "$EXTRA" | paste -sd, -)" >> $GITHUB_OUTPUT
+          {
+            echo "GH_USERNAME=$GH_USERNAME"
+            echo "BASE=$BASE"
+            echo "STATE=$STATE"
+            echo "READY_LABEL=$READY_LABEL"
+            echo "EXTRA=$(echo "$EXTRA" | paste -sd, -)"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Find matching PRs by username+base+unique label
         id: find
@@ -115,7 +153,7 @@ jobs:
         run: |
           IFS=, read -ra arr <<< "$PRS"
           for PR in "${arr[@]}"; do
-            PR=$(echo $PR | xargs)
+            PR=$(echo "$PR" | xargs)
             TITLE=$(gh pr view "$PR" --json title --jq .title)
             HEAD=$(gh pr view "$PR" --json headRefName --jq .headRefName)
             echo "Including PR #$PR — $TITLE (branch: $HEAD)"
@@ -132,4 +170,4 @@ jobs:
           git push -u origin "$BRANCH"
           gh pr create --base main --head "$BRANCH" \
             --title "Release: $BRANCH" \
-            --body "Built from PRs by @${{ steps.form.outputs.GH_USERNAME }} with label `${{ steps.form.outputs.READY_LABEL }}` targeting `${{ steps.form.outputs.BASE }}`."
+            --body "Built from PRs by @${{ steps.form.outputs.GH_USERNAME }} with label \`${{ steps.form.outputs.READY_LABEL }}\` targeting \`${{ steps.form.outputs.BASE }}\`."
