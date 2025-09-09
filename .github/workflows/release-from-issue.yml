@@ -2,7 +2,7 @@ name: Build release from Issue Form
 
 on:
   issues:
-    types: [opened, edited, labeled]
+    types: [labeled]
 
 permissions:
   contents: write
@@ -139,6 +139,7 @@ jobs:
           echo "BRANCH=$BR" >> "$GITHUB_OUTPUT"
 
       - name: Merge selected PRs (squash commits)
+        id: merge
         env:
           GH_TOKEN: ${{ github.token }}
           PRS: ${{ steps.combine.outputs.PR_LIST }}
@@ -151,30 +152,34 @@ jobs:
             HEAD=$(gh pr view "$PR" --json headRefName --jq .headRefName)
       
             echo "Including PR #$PR — $TITLE (branch: $HEAD)"
-            # Fetch the head branch (same-repo case). For forks, you can change to: git fetch origin "pull/$PR/head:pr-$PR"
             git fetch origin "$HEAD"
-            # Squash changes into the index; do not create a merge commit
             git merge --squash "origin/$HEAD" || {
               echo "::error::Merge conflicts while squashing PR #$PR"; exit 1;
             }
       
-            # Only commit if something is staged
             if git diff --cached --quiet; then
               echo "No changes to include from PR #$PR (already merged or identical). Skipping."
-              # Clean the index just in case
               git reset
             else
               git commit -m "Include PR #$PR: $TITLE"
             fi
           done
+      
+          # Tell next step whether we actually diverged from main
+          if git diff --quiet origin/main..HEAD; then
+            echo "HAS_CHANGES=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "HAS_CHANGES=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Push release branch and open PR to main
+        if: steps.merge.outputs.HAS_CHANGES == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           BRANCH: ${{ steps.mk.outputs.BRANCH }}
         run: |
           git push -u origin "$BRANCH"
-          # If a PR already exists for this head, gh will fail; handle gracefully:
+          # If a PR already exists for this head, don't fail the job
           if gh pr view --head "$BRANCH" --json number >/dev/null 2>&1; then
             echo "PR already exists for $BRANCH"
           else
@@ -182,3 +187,12 @@ jobs:
               --title "Release: $BRANCH" \
               --body "Built from PRs by @${{ steps.form.outputs.GH_USERNAME }} with label \`${{ steps.form.outputs.READY_LABEL }}\` targeting \`${{ steps.form.outputs.BASE }}\`."
           fi
+
+      # Optional: leave a note when there are no changes (requires issues: write)
+      - name: Comment on issue (no changes)
+        if: steps.merge.outputs.HAS_CHANGES != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "No changes between main and selected PRs. Skipping release."
+          # gh issue comment ${{ github.event.issue.number }} -b "No changes between main and selected PRs. Skipping release."
