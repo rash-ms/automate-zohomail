@@ -5,7 +5,7 @@ on:
       - opened
       - synchronize
     branches:
-      - stage
+      - staging
 
 permissions:
   issues: write
