@@ -5,7 +5,7 @@ on:
       - opened
       - synchronize
     branches:
-      - stage
+      - staging
 
 permissions:
   issues: write
@@ -25,3 +25,4 @@ jobs:
             if((pr.labels||[]).some(l=>l.name.toLowerCase()===seg)) return; // already present
             try { await github.rest.issues.createLabel({owner,repo,name:seg,color:'ededed'});} catch {}
             await github.rest.issues.addLabels({owner,repo,issue_number:pr.number,labels:[seg]});
+
