@@ -22,11 +22,12 @@ jobs:
           git config user.name  "release-bot"
           git config user.email "release-bot@users.noreply.github.com"
 
-#      - name: Install gh
-#        uses: cli/gh-action@v2
-
-      - uses: actions4gh/setup-gh@v2
-      - run: gh --version
+      - name: Use gh (preinstalled)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh --version
+          gh pr list --author "$GITHUB_ACTOR" --base stage --state open
 
       - name: Read and validate form values (fail if missing)
         id: form
