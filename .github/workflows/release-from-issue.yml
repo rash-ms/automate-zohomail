@@ -149,20 +149,27 @@ jobs:
           for PR in "${arr[@]}"; do
             PR=$(echo "$PR" | xargs)
             TITLE=$(gh pr view "$PR" --json title --jq .title)
-            HEAD=$(gh pr view "$PR" --json headRefName --jq .headRefName)
       
-            echo "Including PR #$PR — $TITLE (branch: $HEAD)"
-            git fetch origin "$HEAD"
-            git merge --squash "origin/$HEAD" || {
+            echo "Including PR #$PR — $TITLE"
+      
+            # Fetch the PR head ref (works for forks & deleted source branches)
+            git fetch --no-tags origin "pull/$PR/head:pr-$PR"
+      
+            # Squash changes into the index; do not create a merge commit
+            git merge --squash "pr-$PR" || {
               echo "::error::Merge conflicts while squashing PR #$PR"; exit 1;
             }
       
+            # Only commit if something is staged
             if git diff --cached --quiet; then
               echo "No changes to include from PR #$PR (already merged or identical). Skipping."
               git reset
             else
               git commit -m "Include PR #$PR: $TITLE"
             fi
+      
+            # Optional: clean up the local PR branch
+            git branch -D "pr-$PR" || true
           done
       
           # Tell next step whether we actually diverged from main
