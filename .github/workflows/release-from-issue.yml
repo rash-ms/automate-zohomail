@@ -36,29 +36,26 @@ jobs:
           REPO: ${{ github.repository }}
           ISSUE: ${{ github.event.issue.number }}
         run: |
-          # Write the exact Issue Form body
-          cat > body.txt <<'EOF'
+          set -euo pipefail
+          BODY="$RUNNER_TEMP/body.txt"
+      
+          # Write exact Issue Form body
+          cat > "$BODY" <<'EOF'
           ${{ github.event.issue.body }}
           EOF
       
-          # Helper: capture the first non-empty line after a header whose text STARTS with $1
           get_field () {
             awk -v prefix="$1" '
               BEGIN{flag=0}
-              # Detect headers that start with "### "
               /^###[[:space:]]/{
-                # Strip the leading "### " and any leading spaces
                 line=$0
                 sub(/^###[[:space:]]*/,"",line)
-                # If the header begins with the prefix (literal, not regex), start capturing
                 if (index(line, prefix)==1) { flag=1; next } else { flag=0 }
               }
-              # While in the right section, print lines until the next header
               flag { print }
-            ' body.txt | sed '/^[[:space:]]*$/d' | head -n 1 | xargs
+            ' "$BODY" | sed '/^[[:space:]]*$/d' | head -n 1 | xargs
           }
       
-          # Same idea, but return the whole section for parsing EXTRA PRs
           get_section () {
             awk -v prefix="$1" '
               BEGIN{flag=0}
@@ -68,22 +65,17 @@ jobs:
                 if (index(line, prefix)==1) { flag=1; next } else { flag=0 }
               }
               flag { print }
-            ' body.txt
+            ' "$BODY"
           }
       
-          # Read fields by their header PREFIX (ignore any hints in parentheses)
           GH_USERNAME=$(get_field "Your GitHub username (exact)")
           BASE=$(get_field "Base branch PRs target")
           STATE=$(get_field "PR state to include")
           LABEL_SUFFIX=$(get_field "Your unique label suffix")
       
-          # Optional list of PRs/URLs
           EXTRA=$(get_section "Extra PR numbers or URLs" \
-            | sed 's/.*pull\///' \
-            | sed 's/[^0-9].*$//' \
-            | grep -E '^[0-9]+$' || true)
+            | sed 's/.*pull\///' | sed 's/[^0-9].*$//' | grep -E '^[0-9]+$' || true)
       
-          # Fail if any required field is missing
           for var in GH_USERNAME BASE STATE LABEL_SUFFIX; do
             eval v=\$$var
             if [ -z "$v" ]; then
@@ -91,7 +83,6 @@ jobs:
             fi
           done
       
-          # Opener must match the GH username
           OPENER="${{ github.event.issue.user.login }}"
           if [ "$OPENER" != "$GH_USERNAME" ]; then
             echo "::error::Issue opener ($OPENER) must match GH username ($GH_USERNAME)"; exit 1
@@ -152,15 +143,29 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PRS: ${{ steps.combine.outputs.PR_LIST }}
         run: |
+          set -euo pipefail
           IFS=, read -ra arr <<< "$PRS"
           for PR in "${arr[@]}"; do
             PR=$(echo "$PR" | xargs)
             TITLE=$(gh pr view "$PR" --json title --jq .title)
             HEAD=$(gh pr view "$PR" --json headRefName --jq .headRefName)
+      
             echo "Including PR #$PR — $TITLE (branch: $HEAD)"
+            # Fetch the head branch (same-repo case). For forks, you can change to: git fetch origin "pull/$PR/head:pr-$PR"
             git fetch origin "$HEAD"
-            git merge --squash "origin/$HEAD"
-            git commit -m "Include PR #$PR: $TITLE"
+            # Squash changes into the index; do not create a merge commit
+            git merge --squash "origin/$HEAD" || {
+              echo "::error::Merge conflicts while squashing PR #$PR"; exit 1;
+            }
+      
+            # Only commit if something is staged
+            if git diff --cached --quiet; then
+              echo "No changes to include from PR #$PR (already merged or identical). Skipping."
+              # Clean the index just in case
+              git reset
+            else
+              git commit -m "Include PR #$PR: $TITLE"
+            fi
           done
 
       - name: Push release branch and open PR to main
