@@ -203,3 +203,41 @@ jobs:
         run: |
           echo "No changes between main and selected PRs. Skipping release."
           # gh issue comment ${{ github.event.issue.number }} -b "No changes between main and selected PRs. Skipping release."
+
+      - name: Get PR info
+        id: pr
+        if: steps.merge.outputs.HAS_CHANGES == 'true'
+        env: { GH_TOKEN: ${{ github.token }} }
+        run: |
+          j=$(gh pr view --head "${{ steps.mk.outputs.BRANCH }}" --json number,url,title,baseRefName,headRefName,author)
+          echo "number=$(jq -r .number <<<"$j")" >> "$GITHUB_OUTPUT"
+          echo "url=$(jq -r .url <<<"$j")"       >> "$GITHUB_OUTPUT"
+          echo "title=$(jq -r .title <<<"$j")"   >> "$GITHUB_OUTPUT"
+          echo "base=$(jq -r .baseRefName <<<"$j")" >> "$GITHUB_OUTPUT"
+          echo "head=$(jq -r .headRefName <<<"$j")" >> "$GITHUB_OUTPUT"
+          echo "author=$(jq -r .author.login <<<"$j")" >> "$GITHUB_OUTPUT"
+
+      - name: Notify Slack via bot
+        if: steps.merge.outputs.HAS_CHANGES == 'true' && steps.pr.outputs.base == 'main'
+        uses: slackapi/slack-github-action@v1
+        with:
+          channel-id: C0123456789
+          payload: |
+            {
+              "text": "Release PR needs approval",
+              "blocks": [
+                { "type": "header", "text": { "type": "plain_text", "text": "Release PR needs approval" } },
+                { "type": "section", "text": { "type": "mrkdwn",
+                  "text": "*Repo:* ${{ github.repository }}\n*Author:* @${{ steps.pr.outputs.author }}\n*PR:* <${{ steps.pr.outputs.url }}|#${{ steps.pr.outputs.number }} — ${{ steps.pr.outputs.title }}>\n*Base:* ${{ steps.pr.outputs.base }}   *Head:* ${{ steps.pr.outputs.head }}"
+                }},
+                { "type": "context", "elements": [
+                  { "type": "mrkdwn", "text": "cc: ${{ steps.form.outputs.SLACK_CC }}" }
+                ]},
+                { "type": "actions", "elements": [
+                  { "type": "button", "text": { "type": "plain_text", "text": "Open PR" }, "url": "${{ steps.pr.outputs.url }}", "style": "primary" }
+                ]}
+              ]
+            }
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+
