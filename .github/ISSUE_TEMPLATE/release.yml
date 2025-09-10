@@ -19,6 +19,14 @@ body:
     validations:
       required: true
 
+  - type: input
+    id: days_back
+    attributes:
+      label: Updated within last (days)
+      placeholder: "14"
+    validations:
+      required: true
+
   - type: dropdown
     id: state
     attributes:
@@ -27,14 +35,18 @@ body:
     validations:
       required: true
 
-  - type: input
-    id: label_suffix
+  - type: dropdown
+    id: slack_cc
     attributes:
-      label: Your unique label suffix (will be prefixed with ready-for-prod-)
-      placeholder: "your-username"
-      description: "Example: if you type `octocat`, the workflow looks for label `ready-for-prod-octocat`"
+      label: Slack CC (optional)
+      description: "Pick Slack users/teams to notify"
+      multiple: true
+      options:
+        - "<@U0123AAAA> Alice"
+        - "<@U0456BBBB> Bob"
+        - "<!subteam^S0TEAMID|@release-approvers> Release approvers"
     validations:
-      required: true
+      required: false
 
   - type: textarea
     id: extra_prs
