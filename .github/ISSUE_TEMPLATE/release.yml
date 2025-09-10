@@ -14,7 +14,7 @@ body:
   - type: input
     id: base
     attributes:
-      label: Base branch PRs target (e.g. stage)
+      label: Base PRs branch (e.g. staging)
       placeholder: "staging"
     validations:
       required: true
@@ -22,29 +22,33 @@ body:
   - type: input
     id: days_back
     attributes:
-      label: Updated within last (days)
+      label: Lookback window (days)
       placeholder: "14"
+      description: "Include PRs updated within the past N days."
     validations:
       required: true
+
+    #options: ["open", "merged"]
 
   - type: dropdown
     id: state
     attributes:
-      label: PR state to include
-      options: ["open", "merged"]
+      label: PR status
+      options:
+        - open
+        - merged
     validations:
       required: true
 
   - type: dropdown
     id: slack_cc
     attributes:
-      label: Slack CC (optional)
+      label: Reviewer
       description: "Pick Slack users/teams to notify"
       multiple: true
       options:
         - "<@U0123AAAA> Alice"
         - "<@U0456BBBB> Bob"
-        - "<!subteam^S0TEAMID|@release-approvers> Release approvers"
     validations:
       required: false
 
@@ -61,5 +65,5 @@ body:
     attributes:
       label: Confirm
       options:
-        - label: "I confirm I own the PRs under this username and have applied the label `ready-for-prod-<suffix>` to each PR."
+        - label: "I own these PRs; they meet the filters."
           required: true
