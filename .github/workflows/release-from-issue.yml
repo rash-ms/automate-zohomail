@@ -190,8 +190,9 @@ jobs:
 
       - name: Get PR info
         id: pr
-        if: steps.merge.outputs.HAS_CHANGES == 'true'
-        env: { GH_TOKEN: ${{ github.token }} }
+        if: ${{ steps.merge.outputs.HAS_CHANGES == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           j=$(gh pr view --head "${{ steps.mk.outputs.BRANCH }}" --json number,url,title,baseRefName,headRefName,author)
           echo "number=$(jq -r .number <<<"$j")" >> "$GITHUB_OUTPUT"
@@ -202,7 +203,7 @@ jobs:
           echo "author=$(jq -r .author.login <<<"$j")" >> "$GITHUB_OUTPUT"
 
       - name: Notify Slack via bot
-        if: steps.merge.outputs.HAS_CHANGES == 'true' && steps.pr.outputs.base == 'main'
+        if: ${{ steps.merge.outputs.HAS_CHANGES == 'true' && steps.pr.outputs.base == 'main' }}
         uses: slackapi/slack-github-action@v1
         with:
           channel-id: C0123456789
