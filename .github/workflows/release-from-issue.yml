@@ -179,27 +179,42 @@ jobs:
           fi
 
       - name: Push release branch and open PR to main
-        if: steps.merge.outputs.HAS_CHANGES == 'true'
+        if: ${{ steps.merge.outputs.HAS_CHANGES == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
           BRANCH: ${{ steps.mk.outputs.BRANCH }}
+          REPO: ${{ github.repository }}
         run: |
+          set -euo pipefail
           git push -u origin "$BRANCH"
-          if gh pr view --head "$BRANCH" --json number >/dev/null 2>&1; then
-            echo "PR already exists for $BRANCH"
+
+          # Does a PR for this head branch already exist?
+          EXIST=$(gh pr list --repo "$REPO" --head "$BRANCH" --state all --json number --jq '.[0].number' || true)
+
+          if [ -n "${EXIST:-}" ]; then
+            echo "PR already exists for $BRANCH (#$EXIST)"
           else
             gh pr create --base main --head "$BRANCH" \
               --title "Release: $BRANCH" \
               --body "Built from PRs by @${{ steps.form.outputs.GH_USERNAME }} targeting \`${{ steps.form.outputs.BASE }}\`, updated within the last \`${{ steps.form.outputs.DAYS_BACK }}\` days."
           fi
 
+
       - name: Get PR info
         id: pr
         if: ${{ steps.merge.outputs.HAS_CHANGES == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ steps.mk.outputs.BRANCH }}
+          REPO: ${{ github.repository }}
         run: |
-          j=$(gh pr view --head "${{ steps.mk.outputs.BRANCH }}" --json number,url,title,baseRefName,headRefName,author)
+          set -euo pipefail
+          j=$(gh pr list --repo "$REPO" --head "$BRANCH" --state all \
+                --json number,url,title,baseRefName,headRefName,author \
+                --jq '.[0]')
+          if [ -z "$j" ] || [ "$j" = "null" ]; then
+            echo "::error::No PR found for head $BRANCH"; exit 1
+          fi
           echo "number=$(jq -r .number <<<"$j")" >> "$GITHUB_OUTPUT"
           echo "url=$(jq -r .url <<<"$j")"       >> "$GITHUB_OUTPUT"
           echo "title=$(jq -r .title <<<"$j")"   >> "$GITHUB_OUTPUT"
