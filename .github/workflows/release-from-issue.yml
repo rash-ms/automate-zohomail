@@ -30,8 +30,12 @@ jobs:
         run: |
           set -euo pipefail
           BODY="$RUNNER_TEMP/body.txt"
-          printf '%s\n' "${{ github.event.issue.body }}" > "$BODY"
-
+      
+          # Write exact Issue Form body
+          cat > "$BODY" <<'EOF'
+          ${{ github.event.issue.body }}
+          EOF
+    
           # helpers
           get_field () {
             awk -v prefix="$1" '
