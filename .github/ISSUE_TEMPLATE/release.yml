@@ -12,15 +12,6 @@ body:
       required: true
 
   - type: input
-    id: label_suffix
-    attributes:
-      label: Your unique label suffix (will be prefixed with ready-for-prod-)
-      placeholder: "your-username"
-      description: "Example: if you type `octocat`, the workflow looks for label `ready-for-prod-octocat`"
-    validations:
-      required: true
-
-  - type: input
     id: base
     attributes:
       label: Base branch PRs target (e.g. stage)

@@ -23,13 +23,6 @@ jobs:
           git config user.name  "release-bot"
           git config user.email "release-bot@users.noreply.github.com"
 
-      - name: Use gh (preinstalled)
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh --version
-          gh pr list --author "$GITHUB_ACTOR" --base stage --state open
-
       - name: Read and validate form values (fail if missing)
         id: form
         env:
@@ -38,10 +31,9 @@ jobs:
           set -euo pipefail
           BODY="$RUNNER_TEMP/body.txt"
           printf '%s\n' "${{ github.event.issue.body }}" > "$BODY"
-      
+
           # helpers
           get_field () {
-            # Pull the first non-empty line under a "### <label>" heading
             awk -v prefix="$1" '
               BEGIN{flag=0}
               /^###[[:space:]]/{
@@ -51,9 +43,7 @@ jobs:
               flag { print }
             ' "$BODY" | sed '/^[[:space:]]*$/d' | head -n 1 | xargs
           }
-      
           get_section_lines () {
-            # Return all non-empty lines under a "### <label>" heading
             awk -v prefix="$1" '
               BEGIN{flag=0}
               /^###[[:space:]]/{
@@ -63,46 +53,41 @@ jobs:
               flag { print }
             ' "$BODY" | sed '/^[[:space:]]*$/d'
           }
-      
+
           GH_USERNAME=$(get_field "Your GitHub username (exact)")
-          LABEL_SUFFIX=$(get_field "Your unique label suffix (will be prefixed with ready-for-prod-)")
           BASE=$(get_field "Base branch PRs target (e.g. stage)")
           STATE=$(get_field "PR state to include")
           DAYS_BACK=$(get_field "Updated within last (days)")
-          # Multi-select produces one choice per line (often prefixed with "- ")
           SLACK_CC=$(get_section_lines "Slack CC (optional)" | sed 's/^- *//' | paste -sd' ' - || true)
-      
-          # Optional free-text extras (numbers or URLs)
+
+          # Optional extra PRs (numbers or URLs)
           EXTRA=$(
             get_section_lines "Extra PR numbers or URLs to include (optional)" \
             | sed 's/.*pull\///' | sed 's/[^0-9].*$//' | grep -E '^[0-9]+$' || true
           )
-      
-          for var in GH_USERNAME LABEL_SUFFIX BASE STATE DAYS_BACK; do
+
+          for var in GH_USERNAME BASE STATE DAYS_BACK; do
             eval v=\$$var
             if [ -z "$v" ]; then
               echo "::error::$var is required in the issue form"; exit 1
             fi
           done
-      
+
           OPENER="${{ github.event.issue.user.login }}"
           if [ "$OPENER" != "$GH_USERNAME" ]; then
             echo "::error::Issue opener ($OPENER) must match GH username ($GH_USERNAME)"; exit 1
           fi
-      
-          READY_LABEL="ready-for-prod-$LABEL_SUFFIX"
-      
+
           {
             echo "GH_USERNAME=$GH_USERNAME"
             echo "BASE=$BASE"
             echo "STATE=$STATE"
             echo "DAYS_BACK=$DAYS_BACK"
-            echo "READY_LABEL=$READY_LABEL"
             echo "SLACK_CC=$SLACK_CC"
             echo "EXTRA=$(echo "$EXTRA" | paste -sd, -)"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Find PRs by label-added timestamp (author+base+state+label within days_back)
+      - name: Find PRs by author/base/state updated within days_back
         id: find
         env:
           GH_TOKEN: ${{ github.token }}
@@ -110,41 +95,27 @@ jobs:
           GH_USERNAME: ${{ steps.form.outputs.GH_USERNAME }}
           BASE: ${{ steps.form.outputs.BASE }}
           STATE: ${{ steps.form.outputs.STATE }}
-          READY_LABEL: ${{ steps.form.outputs.READY_LABEL }}
           DAYS: ${{ steps.form.outputs.DAYS_BACK }}
         run: |
           set -euo pipefail
-          # Step 1: candidate PR numbers
-          CAND=$(gh pr list \
-                   --author "$GH_USERNAME" \
-                   --base "$BASE" \
-                   --state "$STATE" \
-                   --label "$READY_LABEL" \
-                   --json number --jq '.[].number') || true
-      
+          SINCE=$(date -u -d "-${DAYS:-14} days" +%Y-%m-%d)
+
+          # Build search query (no label required)
+          Q="repo:${REPO} is:pr author:${GH_USERNAME} base:${BASE} updated:>=${SINCE}"
+          if [ "${STATE,,}" = "merged" ]; then
+            Q="$Q is:merged"
+          else
+            Q="$Q is:open"
+          fi
+
+          # Fetch PR numbers
+          CAND=$(gh api search/issues -f q="$Q" --jq '.items[].number' || true)
+
           if [ -z "${CAND:-}" ]; then
-            echo "::error::No PRs found (author=$GH_USERNAME base=$BASE state=$STATE label=$READY_LABEL)"; exit 1
+            echo "::error::No PRs found for author=$GH_USERNAME base=$BASE state=$STATE updated:>=$SINCE"; exit 1
           fi
-      
-          # Step 2: keep only PRs where READY_LABEL was added within N days
-          CUTOFF_SEC=$(date -u -d "-${DAYS:-14} days" +%s)
-          KEEP=()
-          for PR in $CAND; do
-            TS=$(gh api repos/$REPO/issues/$PR/events --paginate \
-                  --jq '[ .[] | select(.event=="labeled" and .label.name=="'"$READY_LABEL"'") ][-1].created_at') || true
-            if [ -n "${TS:-}" ]; then
-              TS_SEC=$(date -u -d "$TS" +%s)
-              if [ "$TS_SEC" -ge "$CUTOFF_SEC" ]; then
-                KEEP+=("$PR")
-              fi
-            fi
-          done
-      
-          if [ ${#KEEP[@]} -eq 0 ]; then
-            echo "::error::No PRs where label '$READY_LABEL' was added in the last ${DAYS:-14} days."; exit 1
-          fi
-      
-          PRS=$(IFS=,; echo "${KEEP[*]}")
+
+          PRS=$(printf '%s\n' $CAND | sort -u | paste -sd, -)
           echo "PRS=$PRS" >> $GITHUB_OUTPUT
           echo "Filtered PRs: $PRS"
 
@@ -164,7 +135,6 @@ jobs:
         id: mk
         run: |
           git fetch origin main
-          # Unique name: date+time (to the second) + issue + run id
           BR="release/$(date +%Y-%m-%d-%H%M%S)-${{ github.event.issue.number }}-${{ github.run_id }}"
           git switch -c "$BR" origin/main
           echo "BRANCH=$BR" >> "$GITHUB_OUTPUT"
@@ -180,30 +150,23 @@ jobs:
           for PR in "${arr[@]}"; do
             PR=$(echo "$PR" | xargs)
             TITLE=$(gh pr view "$PR" --json title --jq .title)
-      
+
             echo "Including PR #$PR — $TITLE"
-      
-            # Fetch the PR head ref (works for forks & deleted source branches)
+
             git fetch --no-tags origin "pull/$PR/head:pr-$PR"
-      
-            # Squash changes into the index; do not create a merge commit
             git merge --squash "pr-$PR" || {
               echo "::error::Merge conflicts while squashing PR #$PR"; exit 1;
             }
-      
-            # Only commit if something is staged
+
             if git diff --cached --quiet; then
               echo "No changes to include from PR #$PR (already merged or identical). Skipping."
               git reset
             else
               git commit -m "Include PR #$PR: $TITLE"
             fi
-      
-            # Optional: clean up the local PR branch
             git branch -D "pr-$PR" || true
           done
-      
-          # Tell next step whether we actually diverged from main
+
           if git diff --quiet origin/main..HEAD; then
             echo "HAS_CHANGES=false" >> "$GITHUB_OUTPUT"
           else
@@ -217,23 +180,13 @@ jobs:
           BRANCH: ${{ steps.mk.outputs.BRANCH }}
         run: |
           git push -u origin "$BRANCH"
-          # If a PR already exists for this head, don't fail the job
           if gh pr view --head "$BRANCH" --json number >/dev/null 2>&1; then
             echo "PR already exists for $BRANCH"
           else
             gh pr create --base main --head "$BRANCH" \
               --title "Release: $BRANCH" \
-              --body "Built from PRs by @${{ steps.form.outputs.GH_USERNAME }} with label \`${{ steps.form.outputs.READY_LABEL }}\` targeting \`${{ steps.form.outputs.BASE }}\`."
+              --body "Built from PRs by @${{ steps.form.outputs.GH_USERNAME }} targeting \`${{ steps.form.outputs.BASE }}\`, updated within the last \`${{ steps.form.outputs.DAYS_BACK }}\` days."
           fi
-
-      # Optional: leave a note when there are no changes (requires issues: write)
-      - name: Comment on issue (no changes)
-        if: steps.merge.outputs.HAS_CHANGES != 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          echo "No changes between main and selected PRs. Skipping release."
-          # gh issue comment ${{ github.event.issue.number }} -b "No changes between main and selected PRs. Skipping release."
 
       - name: Get PR info
         id: pr
@@ -259,7 +212,7 @@ jobs:
               "blocks": [
                 { "type": "header", "text": { "type": "plain_text", "text": "Release PR needs approval" } },
                 { "type": "section", "text": { "type": "mrkdwn",
-                  "text": "*Repo:* ${{ github.repository }}\n*Author:* @${{ steps.pr.outputs.author }}\n*PR:* <${{ steps.pr.outputs.url }}|#${{ steps.pr.outputs.number }} — ${{ steps.pr.outputs.title }}>\n*Base:* ${{ steps.pr.outputs.base }}   *Head:* ${{ steps.pr.outputs.head }}"
+                  "text": "*Repo:* ${{ github.repository }}\n*Author:* @${{ steps.pr.outputs.author }}\n*PR:* <${{ steps.pr.outputs.url }}|#${{ steps.pr.outputs.number }} — ${{ steps.pr.outputs.title }}>\n*Base:* ${{ steps.pr.outputs.base }}   *Head:* ${{ steps.pr.outputs.head }}\n*Filter:* author=@${{ steps.form.outputs.GH_USERNAME }}, base=${{ steps.form.outputs.BASE }}, updated within last ${{ steps.form.outputs.DAYS_BACK }} days"
                 }},
                 { "type": "context", "elements": [
                   { "type": "mrkdwn", "text": "cc: ${{ steps.form.outputs.SLACK_CC }}" }
