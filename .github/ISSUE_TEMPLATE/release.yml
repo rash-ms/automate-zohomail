@@ -12,15 +12,6 @@ body:
       required: true
 
   - type: input
-    id: label_suffix
-    attributes:
-      label: Your unique label suffix (will be prefixed with ready-for-prod-)
-      placeholder: "your-username"
-      description: "Example: if you type `octocat`, the workflow looks for label `ready-for-prod-octocat`"
-    validations:
-      required: true
-
-  - type: input
     id: base
     attributes:
       label: Base branch PRs target (e.g. stage)
@@ -35,22 +26,6 @@ body:
       placeholder: "14"
     validations:
       required: true
-
-  - type: dropdown
-    id: category_labels
-    attributes:
-      label: Category labels to include (optional, multi-select)
-      multiple: true
-      options:
-        - bug
-        - enhancement
-        - docs
-        - chore
-        - refactor
-        - perf
-        - test
-    validations:
-      required: false
 
   - type: dropdown
     id: state
