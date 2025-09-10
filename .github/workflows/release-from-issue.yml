@@ -54,11 +54,11 @@ jobs:
             ' "$BODY" | sed '/^[[:space:]]*$/d'
           }
 
-          GH_USERNAME=$(get_field "Your GitHub username (exact)")
-          BASE=$(get_field "Base branch PRs target (e.g. stage)")
-          STATE=$(get_field "PR state to include")
-          DAYS_BACK=$(get_field "Updated within last (days)")
-          SLACK_CC=$(get_section_lines "Slack CC (optional)" | sed 's/^- *//' | paste -sd' ' - || true)
+          GH_USERNAME=$(get_field "GitHub username")
+          BASE=$(get_field "Base PRs branch (e.g. staging)")
+          STATE=$(get_field "PR status")
+          DAYS_BACK=$(get_field "Lookback window (days)")
+          SLACK_CC=$(get_section_lines "Reviewer" | sed 's/^- *//' | paste -sd' ' - || true)
 
           # Optional extra PRs (numbers or URLs)
           EXTRA=$(
