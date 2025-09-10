@@ -6,7 +6,7 @@ body:
   - type: input
     id: gh_username
     attributes:
-      label: Your GitHub username (exact)
+      label: GitHub username
       placeholder: "e.g. octocat"
     validations:
       required: true
@@ -15,7 +15,7 @@ body:
     id: base
     attributes:
       label: Base branch PRs target (e.g. stage)
-      placeholder: "stage"
+      placeholder: "staging"
     validations:
       required: true
 
