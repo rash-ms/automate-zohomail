@@ -1,85 +1,121 @@
 name: pr-autolabel
-
 on:
-  pull_request:
+  pull_request_target:
     types:
       - opened
       - synchronize
-      - reopened
     branches:
       - staging
 
 permissions:
   issues: write
   contents: read
-  pull-requests: write
 
 jobs:
   label:
     runs-on: ubuntu-latest
     steps:
-      - name: Auto-label PR from branch name
-        uses: actions/github-script@v7
+      - uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const { owner, repo } = context.repo;
-            const pr = context.payload.pull_request;
-            
-            // Extract label from PR branch name (part before first '/')
-            const branchName = pr.head.ref || '';
-            const labelName = branchName.split('/')[0]?.trim().toLowerCase();
-            
-            if (!labelName) {
-              console.log('No label name extracted from branch name:', branchName);
-              return;
+            const {owner,repo}=context.repo;
+            const pr=context.payload.pull_request;
+            const t=(pr.title||'').trim();
+
+            // from PR title: "token: ..." or "token/..." or first word
+            const m = t.match(/^\s*([^:\s\/]+)\s*:/) || t.match(/^\s*([^\/\s:]+)\//) || t.match(/^\s*([^\s]+)/);
+            if(!m) return;
+            const name=m[1].toLowerCase();
+
+            // create if missing (idempotent) then add if not already present
+            try { await github.rest.issues.createLabel({ owner, repo, name, color:'ededed' }); } catch {}
+            if(!(pr.labels||[]).some(l=>l.name.toLowerCase()===name)){
+              await github.rest.issues.addLabels({ owner, repo, issue_number: pr.number, labels: [name] });
             }
-            
-            console.log(`Extracted label name: "${labelName}" from branch: "${branchName}"`);
-            
-            // Check if PR already has this label
-            const existingLabels = pr.labels || [];
-            if (existingLabels.some(label => label.name.toLowerCase() === labelName)) {
-              console.log(`PR already has label: ${labelName}`);
-              return;
-            }
-            
-            try {
-              // Try to get existing label first
-              try {
-                await github.rest.issues.getLabel({
-                  owner,
-                  repo,
-                  name: labelName
-                });
-                console.log(`Label "${labelName}" already exists`);
-              } catch (error) {
-                if (error.status === 404) {
-                  // Label doesn't exist, create it
-                  await github.rest.issues.createLabel({
-                    owner,
-                    repo,
-                    name: labelName,
-                    color: 'ededed',
-                    description: `Auto-generated label from branch prefix: ${labelName}`
-                  });
-                  console.log(`Created new label: ${labelName}`);
-                } else {
-                  throw error;
-                }
-              }
-              
-              // Add label to PR
-              await github.rest.issues.addLabelsToIssue({
-                owner,
-                repo,
-                issue_number: pr.number,
-                labels: [labelName]
-              });
-              
-              console.log(`Added label "${labelName}" to PR #${pr.number}`);
-              
-            } catch (error) {
-              console.error(`Error processing label "${labelName}":`, error.message);
-              // Don't fail the workflow if labeling fails
-            }
+
+
+#name: pr-autolabel
+#
+#on:
+#  pull_request:
+#    types:
+#      - opened
+#      - synchronize
+#      - reopened
+#    branches:
+#      - staging
+#
+#permissions:
+#  issues: write
+#  contents: read
+#  pull-requests: write
+#
+#jobs:
+#  label:
+#    runs-on: ubuntu-latest
+#    steps:
+#      - name: Auto-label PR from branch name
+#        uses: actions/github-script@v7
+#        with:
+#          github-token: ${{ secrets.GITHUB_TOKEN }}
+#          script: |
+#            const { owner, repo } = context.repo;
+#            const pr = context.payload.pull_request;
+#
+#            // Extract label from PR branch name (part before first '/')
+#            const branchName = pr.head.ref || '';
+#            const labelName = branchName.split('/')[0]?.trim().toLowerCase();
+#
+#            if (!labelName) {
+#              console.log('No label name extracted from branch name:', branchName);
+#              return;
+#            }
+#
+#            console.log(`Extracted label name: "${labelName}" from branch: "${branchName}"`);
+#
+#            // Check if PR already has this label
+#            const existingLabels = pr.labels || [];
+#            if (existingLabels.some(label => label.name.toLowerCase() === labelName)) {
+#              console.log(`PR already has label: ${labelName}`);
+#              return;
+#            }
+#
+#            try {
+#              // Try to get existing label first
+#              try {
+#                await github.rest.issues.getLabel({
+#                  owner,
+#                  repo,
+#                  name: labelName
+#                });
+#                console.log(`Label "${labelName}" already exists`);
+#              } catch (error) {
+#                if (error.status === 404) {
+#                  // Label doesn't exist, create it
+#                  await github.rest.issues.createLabel({
+#                    owner,
+#                    repo,
+#                    name: labelName,
+#                    color: 'ededed',
+#                    description: `Auto-generated label from branch prefix: ${labelName}`
+#                  });
+#                  console.log(`Created new label: ${labelName}`);
+#                } else {
+#                  throw error;
+#                }
+#              }
+#
+#              // Add label to PR
+#              await github.rest.issues.addLabelsToIssue({
+#                owner,
+#                repo,
+#                issue_number: pr.number,
+#                labels: [labelName]
+#              });
+#
+#              console.log(`Added label "${labelName}" to PR #${pr.number}`);
+#
+#            } catch (error) {
+#              console.error(`Error processing label "${labelName}":`, error.message);
+#              // Don't fail the workflow if labeling fails
+#            }
