@@ -104,23 +104,24 @@ jobs:
           set -euo pipefail
           SINCE=$(date -u -d "-${DAYS:-14} days" +%Y-%m-%d)
 
-          # Build search query (no label required)
-          Q="repo:${REPO} is:pr author:${GH_USERNAME} base:${BASE} updated:>=${SINCE}"
-          if [ "${STATE,,}" = "merged" ]; then
-            Q="$Q is:merged"
-          else
-            Q="$Q is:open"
-          fi
-
-          # Fetch PR numbers
-          CAND=$(gh api search/issues -f q="$Q" --jq '.items[].number' || true)
+          # Use gh pr list (stable) instead of gh api /search/issues
+          CAND=$(
+            gh pr list \
+              --repo "$REPO" \
+              --author "$GH_USERNAME" \
+              --base "$BASE" \
+              --state "$STATE" \
+              --search "updated:>=$SINCE" \
+              --json number --jq '.[].number' \
+            || true
+          )
 
           if [ -z "${CAND:-}" ]; then
             echo "::error::No PRs found for author=$GH_USERNAME base=$BASE state=$STATE updated:>=$SINCE"; exit 1
           fi
 
           PRS=$(printf '%s\n' $CAND | sort -u | paste -sd, -)
-          echo "PRS=$PRS" >> $GITHUB_OUTPUT
+          echo "PRS=$PRS" >> "$GITHUB_OUTPUT"
           echo "Filtered PRs: $PRS"
 
       - name: Combine with any extra PRs
