@@ -34,49 +34,51 @@ jobs:
         id: form
         env:
           REPO: ${{ github.repository }}
-          ISSUE: ${{ github.event.issue.number }}
         run: |
           set -euo pipefail
           BODY="$RUNNER_TEMP/body.txt"
+          printf '%s\n' "${{ github.event.issue.body }}" > "$BODY"
       
-          # Write exact Issue Form body
-          cat > "$BODY" <<'EOF'
-          ${{ github.event.issue.body }}
-          EOF
-      
+          # helpers
           get_field () {
+            # Pull the first non-empty line under a "### <label>" heading
             awk -v prefix="$1" '
               BEGIN{flag=0}
               /^###[[:space:]]/{
-                line=$0
-                sub(/^###[[:space:]]*/,"",line)
+                line=$0; sub(/^###[[:space:]]*/,"",line)
                 if (index(line, prefix)==1) { flag=1; next } else { flag=0 }
               }
               flag { print }
             ' "$BODY" | sed '/^[[:space:]]*$/d' | head -n 1 | xargs
           }
       
-          get_section () {
+          get_section_lines () {
+            # Return all non-empty lines under a "### <label>" heading
             awk -v prefix="$1" '
               BEGIN{flag=0}
               /^###[[:space:]]/{
-                line=$0
-                sub(/^###[[:space:]]*/,"",line)
+                line=$0; sub(/^###[[:space:]]*/,"",line)
                 if (index(line, prefix)==1) { flag=1; next } else { flag=0 }
               }
               flag { print }
-            ' "$BODY"
+            ' "$BODY" | sed '/^[[:space:]]*$/d'
           }
       
           GH_USERNAME=$(get_field "Your GitHub username (exact)")
-          BASE=$(get_field "Base branch PRs target")
+          LABEL_SUFFIX=$(get_field "Your unique label suffix (will be prefixed with ready-for-prod-)")
+          BASE=$(get_field "Base branch PRs target (e.g. stage)")
           STATE=$(get_field "PR state to include")
-          LABEL_SUFFIX=$(get_field "Your unique label suffix")
+          DAYS_BACK=$(get_field "Updated within last (days)")
+          # Multi-select produces one choice per line (often prefixed with "- ")
+          SLACK_CC=$(get_section_lines "Slack CC (optional)" | sed 's/^- *//' | paste -sd' ' - || true)
       
-          EXTRA=$(get_section "Extra PR numbers or URLs" \
-            | sed 's/.*pull\///' | sed 's/[^0-9].*$//' | grep -E '^[0-9]+$' || true)
+          # Optional free-text extras (numbers or URLs)
+          EXTRA=$(
+            get_section_lines "Extra PR numbers or URLs to include (optional)" \
+            | sed 's/.*pull\///' | sed 's/[^0-9].*$//' | grep -E '^[0-9]+$' || true
+          )
       
-          for var in GH_USERNAME BASE STATE LABEL_SUFFIX; do
+          for var in GH_USERNAME LABEL_SUFFIX BASE STATE DAYS_BACK; do
             eval v=\$$var
             if [ -z "$v" ]; then
               echo "::error::$var is required in the issue form"; exit 1
@@ -89,33 +91,62 @@ jobs:
           fi
       
           READY_LABEL="ready-for-prod-$LABEL_SUFFIX"
+      
           {
             echo "GH_USERNAME=$GH_USERNAME"
             echo "BASE=$BASE"
             echo "STATE=$STATE"
+            echo "DAYS_BACK=$DAYS_BACK"
             echo "READY_LABEL=$READY_LABEL"
+            echo "SLACK_CC=$SLACK_CC"
             echo "EXTRA=$(echo "$EXTRA" | paste -sd, -)"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Find matching PRs by username+base+unique label
+      - name: Find PRs by label-added timestamp (author+base+state+label within days_back)
         id: find
         env:
           GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
           GH_USERNAME: ${{ steps.form.outputs.GH_USERNAME }}
           BASE: ${{ steps.form.outputs.BASE }}
           STATE: ${{ steps.form.outputs.STATE }}
           READY_LABEL: ${{ steps.form.outputs.READY_LABEL }}
+          DAYS: ${{ steps.form.outputs.DAYS_BACK }}
         run: |
-          # Build gh filters
-          ARGS=(--author "$GH_USERNAME" --base "$BASE" --state "$STATE" --label "$READY_LABEL")
-
-          PRS=$(gh pr list "${ARGS[@]}" --json number,title,url \
-              --jq 'map(.number)|join(",")')
-          if [ -z "$PRS" ]; then
-            echo "::error::No PRs found for author=$GH_USERNAME base=$BASE state=$STATE label=$READY_LABEL"; exit 1
+          set -euo pipefail
+          # Step 1: candidate PR numbers
+          CAND=$(gh pr list \
+                   --author "$GH_USERNAME" \
+                   --base "$BASE" \
+                   --state "$STATE" \
+                   --label "$READY_LABEL" \
+                   --json number --jq '.[].number') || true
+      
+          if [ -z "${CAND:-}" ]; then
+            echo "::error::No PRs found (author=$GH_USERNAME base=$BASE state=$STATE label=$READY_LABEL)"; exit 1
           fi
+      
+          # Step 2: keep only PRs where READY_LABEL was added within N days
+          CUTOFF_SEC=$(date -u -d "-${DAYS:-14} days" +%s)
+          KEEP=()
+          for PR in $CAND; do
+            TS=$(gh api repos/$REPO/issues/$PR/events --paginate \
+                  --jq '[ .[] | select(.event=="labeled" and .label.name=="'"$READY_LABEL"'") ][-1].created_at') || true
+            if [ -n "${TS:-}" ]; then
+              TS_SEC=$(date -u -d "$TS" +%s)
+              if [ "$TS_SEC" -ge "$CUTOFF_SEC" ]; then
+                KEEP+=("$PR")
+              fi
+            fi
+          done
+      
+          if [ ${#KEEP[@]} -eq 0 ]; then
+            echo "::error::No PRs where label '$READY_LABEL' was added in the last ${DAYS:-14} days."; exit 1
+          fi
+      
+          PRS=$(IFS=,; echo "${KEEP[*]}")
           echo "PRS=$PRS" >> $GITHUB_OUTPUT
-          echo "Found PRs: $PRS"
+          echo "Filtered PRs: $PRS"
 
       - name: Combine with any extra PRs
         id: combine
@@ -240,4 +271,3 @@ jobs:
             }
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-
