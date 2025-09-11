@@ -243,7 +243,7 @@ jobs:
               "blocks": [
                 { "type": "header", "text": { "type": "plain_text", "text": "Release: ${{ steps.form.outputs.TITLE }}", "emoji": true } },            
                 { "type": "section", "text": { "type": "mrkdwn",
-                  "text": "*Repo:* ${{ github.repository }}\n*Author:* @${{ steps.form.outputs.GH_USERNAME }}\n*PR:* <${{ steps.pr.outputs.url }}|#${{ steps.pr.outputs.number }} — ${{ steps.form.outputs.TITLE }}>\n*Target_Branch:* ${{ steps.pr.outputs.base }}\n*Filter:* Author: @${{ steps.form.outputs.GH_USERNAME }} | Base_Branch: ${{ steps.form.outputs.BASE }} | Lookback: ${{ steps.form.outputs.DAYS_BACK }} days"
+                  "text": "*Repo:* ${{ github.repository }}\n*Author:* @${{ steps.form.outputs.GH_USERNAME }}\n*PR:* <${{ steps.pr.outputs.url }}|#${{ steps.pr.outputs.number }} — ${{ steps.form.outputs.TITLE }}>\n*Target_Branch:* ${{ steps.pr.outputs.base }}\n*Filter:* Author: @${{ steps.form.outputs.GH_USERNAME }} | Base: ${{ steps.form.outputs.BASE }} | Lookback: ${{ steps.form.outputs.DAYS_BACK }} days"
                 }},
                 { "type": "context", "elements": [
                   { "type": "mrkdwn", "text": "cc: ${{ steps.form.outputs.SLACK_CC }}" }
