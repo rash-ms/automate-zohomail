@@ -146,9 +146,8 @@ jobs:
           git fetch origin main
           
           USER_SLUG='${{ github.event.issue.user.login }}'
-          TS=$(date -u +%H%M%S)
-          BR="${USER_SLUG}/${{ github.event.issue.number }}-${TS}-${{ github.run_id }}"
-        
+          BR="${USER_SLUG}/${{ github.run_id }}-${{ github.run_attempt }}"
+          
           git switch -c "$BR" origin/main
           echo "BRANCH=$BR" >> "$GITHUB_OUTPUT"
 
