@@ -1,48 +1,70 @@
 name: Enforce Merge Rules to Main
 
 on:
-  pull_request_target:
-    branches: [main]
-    types: [opened, reopened, synchronize, edited, ready_for_review, labeled, unlabeled]
+  pull_request:
+    branches: [ main ]
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - edited
+      - ready_for_review
+      - labeled
+      - unlabeled
 
 permissions:
   contents: read
-  pull-requests: write   # needed to close PR
-  issues: write          # needed to comment
+  pull-requests: write   # to close PR
+  issues: write          # to comment
 
 jobs:
   gate:
+    name: Bot-or-label gate
+    if: ${{ github.event.pull_request.base.ref == 'main' }}
     runs-on: ubuntu-latest
+
     steps:
-      - name: Fail unless author is bot OR label present
+      - name: Evaluate gate
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           REQUIRED_LABEL: release-request
         run: |
           set -euo pipefail
+
+          # Extra safety guard (belt + suspenders)
+          if [[ "${{ github.event.pull_request.base.ref }}" != "main" ]]; then
+            echo "Not targeting main; skipping."; exit 0
+          fi
+
           PR=$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH")
           AUTHOR=$(jq -r '.pull_request.user.login' "$GITHUB_EVENT_PATH")
 
-          mapfile -t LABELS < <(gh api "repos/$REPO/issues/$PR/labels" --jq '.[].name' | tr '[:upper:]' '[:lower:]')
-          echo "Author: $AUTHOR"
-          echo "Labels: ${LABELS[*]}"
+          # Fetch labels fresh
+          readarray -t LABELS < <(gh api "repos/$REPO/issues/$PR/labels" --jq '.[].name' | tr '[:upper:]' '[:lower:]')
 
+          echo "PR #$PR  author=$AUTHOR  labels=${LABELS[*]}"
+
+          # Pass if bot
           if [[ "$AUTHOR" == "github-actions[bot]" ]]; then
-            echo "PASS: PR opened by github-actions[bot]."; exit 0
+            echo "PASS: opened by github-actions[bot]"; exit 0
           fi
-          if printf '%s\n' "${LABELS[@]}" | grep -qx "$(echo "$REQUIRED_LABEL" | tr '[:upper:]' '[:lower:]')"; then
-            echo "PASS: Label '$REQUIRED_LABEL' present."; exit 0
+
+          # Pass if label present (case-insensitive)
+          REQ=$(echo "$REQUIRED_LABEL" | tr '[:upper:]' '[:lower:]')
+          if printf '%s\n' "${LABELS[@]}" | grep -qx "$REQ"; then
+            echo "PASS: label '$REQ' present"; exit 0
           fi
 
           echo "::error::Blocked: PRs to main must be opened by github-actions[bot] OR have label '$REQUIRED_LABEL'."
           exit 1
 
-      - name: Comment and close PR (non-compliant)
+      - name: Comment & close non-compliant PR
         if: failure()
         env:
           GH_TOKEN: ${{ github.token }}
+          REQUIRED_LABEL: release-request
         run: |
           PR=$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH")
-          gh pr comment "$PR" --body "This branch only accepts PRs opened by \`github-actions[bot]\` or labeled \`release-request\`."
+          gh pr comment "$PR" --body "This branch only accepts PRs opened by \`github-actions[bot]\` or labeled \`$REQUIRED_LABEL\`."
           gh pr close "$PR"
