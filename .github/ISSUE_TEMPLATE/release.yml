@@ -47,8 +47,8 @@ body:
       description: "Pick Slack users/teams to notify"
       multiple: true
       options:
-        - "<@U0123AAAA> Alice"
-        - "<@U0456BBBB> Bob"
+        - "<@U03V6VD8JHL> Muj"
+        - "<@U08H78BN7K3> Nai"
     validations:
       required: false
 

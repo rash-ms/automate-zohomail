@@ -226,7 +226,7 @@ jobs:
         if: ${{ steps.merge.outputs.HAS_CHANGES == 'true' && steps.pr.outputs.base == 'main' }}
         uses: slackapi/slack-github-action@v1
         with:
-          channel-id: C0123456789
+          channel-id: C07SSBH5A3A
           payload: |
             {
               "text": "Release PR needs approval",
