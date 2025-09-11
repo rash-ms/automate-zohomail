@@ -1,0 +1,56 @@
+name: Enforce Merge Rules to Main
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize, edited, ready_for_review, labeled, unlabeled]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail unless author is github-actions[bot] OR label 'release-request' is present
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          PR=$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH")
+          AUTHOR=$(jq -r '.pull_request.user.login' "$GITHUB_EVENT_PATH")
+
+          # Get labels fresh from API (robust across all events)
+          mapfile -t LABELS < <(gh api "repos/$REPO/issues/$PR/labels" --jq '.[].name' | tr '[:upper:]' '[:lower:]')
+
+          echo "Author: $AUTHOR"
+          echo "Labels: ${LABELS[*]}"
+
+          # Pass if bot
+          if [[ "$AUTHOR" == "github-actions[bot]" ]]; then
+            echo "PASS: PR opened by github-actions[bot]."
+            exit 0
+          fi
+
+          # Pass if label 'release-request' present (exact match, case-insensitive)
+          if printf '%s\n' "${LABELS[@]}" | grep -qx 'release-request'; then
+            echo "PASS: Label 'release-request' present."
+            exit 0
+          fi
+
+          echo "::error::Blocked: PRs to main must be opened by github-actions[bot] OR have label 'release-request'."
+          exit 1
+
+      - name: Comment and close PR (non-compliant)
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          PR=$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH")
+          gh pr comment "$PR" --body "This branch only accepts PRs opened by \`github-actions[bot]\` or labeled \`release-request\`."
+          gh pr close "$PR"
