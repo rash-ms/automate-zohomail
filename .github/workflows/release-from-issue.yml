@@ -31,6 +31,9 @@ jobs:
           set -euo pipefail
           BODY="$RUNNER_TEMP/body.txt"
       
+          jq -r '.issue.body'  "$GITHUB_EVENT_PATH" > "$BODY"
+          TITLE=$(jq -r '.issue.title' "$GITHUB_EVENT_PATH" | tr -d '\r' | head -n1)
+          
           # Write exact Issue Form body
           cat > "$BODY" <<'EOF'
           ${{ github.event.issue.body }}
@@ -89,6 +92,7 @@ jobs:
             echo "DAYS_BACK=$DAYS_BACK"
             echo "SLACK_CC=$SLACK_CC"
             echo "EXTRA=$(echo "$EXTRA" | paste -sd, -)"
+            echo "TITLE=$TITLE" 
           } >> "$GITHUB_OUTPUT"
 
       - name: Find PRs by author/base/state updated within days_back
@@ -193,12 +197,13 @@ jobs:
 
           if [ -n "${EXIST:-}" ]; then
             echo "PR already exists for $BRANCH (#$EXIST)"
-          else
+          else            
             gh pr create --base main --head "$BRANCH" \
-              --title "Release: $BRANCH" \
-              --body "Built from PRs by @${{ steps.form.outputs.GH_USERNAME }} targeting \`${{ steps.form.outputs.BASE }}\`, updated within the last \`${{ steps.form.outputs.DAYS_BACK }}\` days."
-          fi
+              --title "${{ steps.form.outputs.TITLE }}" \
+              --body "Author: @${{ steps.form.outputs.GH_USERNAME }} | Base: \`${{ steps.form.outputs.BASE }}\` | Lookback: \`${{ steps.form.outputs.DAYS_BACK }}\` days"
 
+
+          fi
 
       - name: Get PR info
         id: pr
@@ -229,11 +234,11 @@ jobs:
           channel-id: C07SSBH5A3A
           payload: |
             {
-              "text": "Release PR needs approval",
+              "text": "Release PR needs approval — ${{ steps.form.outputs.TITLE }}",
               "blocks": [
                 { "type": "header", "text": { "type": "plain_text", "text": "Release PR needs approval" } },
                 { "type": "section", "text": { "type": "mrkdwn",
-                  "text": "*Repo:* ${{ github.repository }}\n*Author:* @${{ steps.pr.outputs.author }}\n*PR:* <${{ steps.pr.outputs.url }}|#${{ steps.pr.outputs.number }} — ${{ steps.pr.outputs.title }}>\n*Base:* ${{ steps.pr.outputs.base }}   *Head:* ${{ steps.pr.outputs.head }}\n*Filter:* author=@${{ steps.form.outputs.GH_USERNAME }}, base=${{ steps.form.outputs.BASE }}, updated within last ${{ steps.form.outputs.DAYS_BACK }} days"
+                  "text": "*Repo:* ${{ github.repository }}\n*Author:* @${{ steps.form.outputs.GH_USERNAME }}\n*PR:* <${{ steps.pr.outputs.url }}|#${{ steps.pr.outputs.number }} — ${{ steps.form.outputs.TITLE }}>\n*Head:* ${{ steps.pr.outputs.head }}\n*Filter:* author=@${{ steps.form.outputs.GH_USERNAME }}, base=${{ steps.form.outputs.BASE }}, pr_lookback=${{ steps.form.outputs.DAYS_BACK }} days"
                 }},
                 { "type": "context", "elements": [
                   { "type": "mrkdwn", "text": "cc: ${{ steps.form.outputs.SLACK_CC }}" }
