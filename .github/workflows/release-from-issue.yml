@@ -4,15 +4,18 @@ on:
   issues:
     types: [labeled]
 
-permissions:
-  contents: write
-  pull-requests: write
-  issues: write
+concurrency:
+  group: release-from-issue-${{ github.event.issue.number }}
+  cancel-in-progress: true
 
 jobs:
   build:
-    if: contains(github.event.issue.labels.*.name, 'release-request')
+    if: ${{ github.event.label.name == 'release-request' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
 
     steps:
       - uses: actions/checkout@v4
