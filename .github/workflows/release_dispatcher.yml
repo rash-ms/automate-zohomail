@@ -18,6 +18,6 @@ jobs:
       issue_number: ${{ github.event.issue.number }}
       issue_opener: ${{ github.event.issue.user.login }}
       repository:   ${{ github.repository }}
-      slack_channel: C0123456789
+      slack_channel: C07SSBH5A3A
     secrets:
       slack_bot_token: ${{ secrets.SLACK_BOT_TOKEN }}
