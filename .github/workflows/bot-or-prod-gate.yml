@@ -1,70 +1,332 @@
-name: Enforce Merge Rules to Main
+name: Build release from Issue Form
 
 on:
-  pull_request:
-    branches: [ main ]
-    types:
-      - opened
-      - reopened
-      - synchronize
-      - edited
-      - ready_for_review
-      - labeled
-      - unlabeled
+  issues:
+    types: [labeled]
 
 permissions:
-  contents: read
-  pull-requests: write   # to close PR
-  issues: write          # to comment
+  contents: write
+  pull-requests: write
+  issues: write
 
 jobs:
-  gate:
-    name: Bot-or-label gate
-    if: ${{ github.event.pull_request.base.ref == 'main' }}
+  build:
+    if: contains(github.event.issue.labels.*.name, 'release-request')
     runs-on: ubuntu-latest
 
     steps:
-      - name: Evaluate gate
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+
+      - name: Configure git
+        run: |
+          git config user.name  "release-bot"
+          git config user.email "release-bot@users.noreply.github.com"
+
+      - name: Read and validate form values (fail if missing)
+        id: form
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          BODY="$RUNNER_TEMP/body.txt"
+
+          # Title from Issue (single line)
+          TITLE=$(jq -r '.issue.title' "$GITHUB_EVENT_PATH" | tr -d '\r' | head -n1)
+
+          # Write the exact Issue Form body (no shell interpolation)
+          cat > "$BODY" <<'EOF'
+          ${{ github.event.issue.body }}
+          EOF
+
+          # helpers to extract fields from the Issue Form body
+          get_field () {
+            awk -v prefix="$1" '
+              BEGIN{flag=0}
+              /^###[[:space:]]/{
+                line=$0; sub(/^###[[:space:]]*/,"",line)
+                if (index(line, prefix)==1) { flag=1; next } else { flag=0 }
+              }
+              flag { print }
+            ' "$BODY" | sed '/^[[:space:]]*$/d' | head -n 1 | xargs
+          }
+          get_section_lines () {
+            awk -v prefix="$1" '
+              BEGIN{flag=0}
+              /^###[[:space:]]/{
+                line=$0; sub(/^###[[:space:]]*/,"",line)
+                if (index(line, prefix)==1) { flag=1; next } else { flag=0 }
+              }
+              flag { print }
+            ' "$BODY" | sed '/^[[:space:]]*$/d'
+          }
+
+          GH_USERNAME=$(get_field "GitHub username")
+          BASE=$(get_field "Base PRs branch (e.g. staging)")
+          STATE=$(get_field "PR status")
+          DAYS_BACK=$(get_field "Lookback window (days)")
+          SLACK_CC=$(get_section_lines "Reviewer" | sed 's/^- *//' | paste -sd' ' - || true)
+
+          # Optional extra PRs (numbers or URLs)
+          EXTRA=$(
+            get_section_lines "Extra PR numbers or URLs to include (optional)" \
+            | sed 's/.*pull\///' | sed 's/[^0-9].*$//' | grep -E '^[0-9]+$' || true
+          )
+
+          # Required fields
+          for var in GH_USERNAME BASE STATE DAYS_BACK; do
+            eval v=\$$var
+            if [ -z "$v" ]; then
+              echo "::error::$var is required in the issue form"; exit 1
+            fi
+          done
+
+          # The Issue opener must match declared username
+          OPENER="${{ github.event.issue.user.login }}"
+          if [ "$OPENER" != "$GH_USERNAME" ]; then
+            echo "::error::Issue opener ($OPENER) must match GH username ($GH_USERNAME)"; exit 1
+          fi
+
+          {
+            echo "GH_USERNAME=$GH_USERNAME"
+            echo "BASE=$BASE"
+            echo "STATE=$STATE"
+            echo "DAYS_BACK=$DAYS_BACK"
+            echo "SLACK_CC=$SLACK_CC"
+            echo "EXTRA=$(echo "$EXTRA" | paste -sd, -)"
+            echo "TITLE=$TITLE"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Find PRs by author/base/state updated within days_back
+        id: find
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          REQUIRED_LABEL: release-request
+          GH_USERNAME: ${{ steps.form.outputs.GH_USERNAME }}
+          BASE: ${{ steps.form.outputs.BASE }}
+          STATE: ${{ steps.form.outputs.STATE }}
+          DAYS: ${{ steps.form.outputs.DAYS_BACK }}
         run: |
           set -euo pipefail
+          SINCE=$(date -u -d "-${DAYS:-14} days" +%Y-%m-%d)
 
-          # Extra safety guard (belt + suspenders)
-          if [[ "${{ github.event.pull_request.base.ref }}" != "main" ]]; then
-            echo "Not targeting main; skipping."; exit 0
+          CAND=$(
+            gh pr list \
+              --repo "$REPO" \
+              --author "$GH_USERNAME" \
+              --base "$BASE" \
+              --state "$STATE" \
+              --search "updated:>=$SINCE" \
+              --json number --jq '.[].number' \
+            || true
+          )
+
+          if [ -z "${CAND:-}" ]; then
+            echo "::error::No PRs found for author=$GH_USERNAME base=$BASE state=$STATE updated:>=$SINCE"; exit 1
           fi
 
-          PR=$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH")
-          AUTHOR=$(jq -r '.pull_request.user.login' "$GITHUB_EVENT_PATH")
+          PRS=$(printf '%s\n' $CAND | sort -u | paste -sd, -)
+          echo "PRS=$PRS" >> "$GITHUB_OUTPUT"
+          echo "Filtered PRs: $PRS"
 
-          # Fetch labels fresh
-          readarray -t LABELS < <(gh api "repos/$REPO/issues/$PR/labels" --jq '.[].name' | tr '[:upper:]' '[:lower:]')
-
-          echo "PR #$PR  author=$AUTHOR  labels=${LABELS[*]}"
-
-          # Pass if bot
-          if [[ "$AUTHOR" == "github-actions[bot]" ]]; then
-            echo "PASS: opened by github-actions[bot]"; exit 0
+      - name: Combine with any extra PRs
+        id: combine
+        run: |
+          A="${{ steps.find.outputs.PRS }}"
+          B="${{ steps.form.outputs.EXTRA }}"
+          LIST=$(printf "%s\n%s\n" "$A" "$B" | tr ',' '\n' | grep -E '^[0-9]+$' | sort -u | paste -sd, -)
+          if [ -z "$LIST" ]; then
+            echo "::error::No PRs to include after combining."; exit 1
           fi
+          echo "PR_LIST=$LIST" >> "$GITHUB_OUTPUT"
+          echo "Including PRs: $LIST"
 
-          # Pass if label present (case-insensitive)
-          REQ=$(echo "$REQUIRED_LABEL" | tr '[:upper:]' '[:lower:]')
-          if printf '%s\n' "${LABELS[@]}" | grep -qx "$REQ"; then
-            echo "PASS: label '$REQ' present"; exit 0
-          fi
+      - name: Create release branch from selected base
+        id: mk
+        run: |
+          set -euo pipefail
+          USER_SLUG='${{ github.event.issue.user.login }}'
+          BR="${USER_SLUG}/${{ github.run_id }}-${{ github.run_attempt }}"
+          BASE='${{ steps.form.outputs.BASE }}'
 
-          echo "::error::Blocked: PRs to main must be opened by github-actions[bot] OR have label '$REQUIRED_LABEL'."
-          exit 1
+          git fetch origin "$BASE"
+          git switch -c "$BR" "origin/$BASE"
 
-      - name: Comment & close non-compliant PR
-        if: failure()
+          echo "BRANCH=$BR"  >> "$GITHUB_OUTPUT"
+          echo "BASE=$BASE"  >> "$GITHUB_OUTPUT"
+
+      # --- NEW: preflight (fail if any PR would conflict) -------------------------
+      - name: Preflight — fail if any PR conflicts
+        id: preflight
         env:
           GH_TOKEN: ${{ github.token }}
-          REQUIRED_LABEL: release-request
+          PRS: ${{ steps.combine.outputs.PR_LIST }}
+          REPO: ${{ github.repository }}
         run: |
-          PR=$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH")
-          gh pr comment "$PR" --body "This branch only accepts PRs opened by \`github-actions[bot]\` or labeled \`$REQUIRED_LABEL\`."
-          gh pr close "$PR"
+          set -euo pipefail
+          BLOCKERS=()
+          IFS=, read -ra arr <<< "$PRS"
+      
+          for PR in "${arr[@]}"; do
+            PR=$(echo "$PR" | xargs)
+      
+            # Try on a clean tree each time
+            git reset --hard
+      
+            # Fetch head for this PR (local branch pr-<number>)
+            git fetch --no-tags origin "pull/$PR/head:pr-$PR"
+      
+            # Dry-run attempt: apply without committing
+            if ! git merge --no-commit --squash "pr-$PR" >/dev/null 2>&1; then
+              echo "::error::Would conflict when applying PR #$PR"
+              BLOCKERS+=("$PR")
+              # Clean merge state
+              git merge --abort || git reset --merge || git reset --hard
+            else
+              # Clean up before next PR
+              git reset --hard
+            fi
+      
+            git branch -D "pr-$PR" || true
+          done
+      
+          if [ ${#BLOCKERS[@]} -gt 0 ]; then
+            echo "blockers=$(IFS=,; echo "${BLOCKERS[*]}")" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+      # --- NEW: notify authors of conflicting PRs ---------------------------------
+      - name: Notify blockers to rebase
+        if: ${{ steps.preflight.outcome == 'failure' && steps.preflight.outputs.blockers != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BASE: ${{ steps.form.outputs.BASE }}
+        run: |
+          set -euo pipefail
+          IFS=, read -ra arr <<< "${{ steps.preflight.outputs.blockers }}"
+          for PR in "${arr[@]}"; do
+            PR=$(echo "$PR" | xargs)
+            gh pr comment "$PR" --body "This PR conflicts with the release build. Please update your branch to \`$BASE\` (rebase or merge) and push again."
+          done
+
+      # --- REPLACE your old merge step with this: runs only if preflight passed ---
+      - name: Merge selected PRs (squash commits; fail on conflict)
+        id: merge
+        if: ${{ steps.preflight.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRS: ${{ steps.combine.outputs.PR_LIST }}
+          BASE: ${{ steps.form.outputs.BASE }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          IFS=, read -ra arr <<< "$PRS"
+          for PR in "${arr[@]}"; do
+            PR=$(echo "$PR" | xargs)
+      
+            # Ensure the PR actually targets the selected base (hard stop if not)
+            BASE_REF=$(gh pr view "$PR" --repo "$REPO" --json baseRefName --jq .baseRefName)
+            if [ "$BASE_REF" != "$BASE" ]; then
+              echo "::error::PR #$PR targets '$BASE_REF' but you selected base '$BASE'."; exit 1
+            fi
+      
+            TITLE=$(gh pr view "$PR" --repo "$REPO" --json title --jq .title)
+            echo "Including PR #$PR — $TITLE"
+      
+            git fetch --no-tags origin "pull/$PR/head:pr-$PR"
+            git merge --squash "pr-$PR" || {
+              echo "::error::Merge conflicts while squashing PR #$PR"
+              git merge --abort || git reset --merge || git reset --hard
+              exit 1
+            }
+      
+            if git diff --cached --quiet; then
+              echo "No changes to include from PR #$PR (already merged or identical)."
+              git reset
+            else
+              git commit -m "Include PR #$PR: $TITLE"
+            fi
+            git branch -D "pr-$PR" || true
+          done
+      
+          if git diff --quiet origin/main..HEAD; then
+            echo "HAS_CHANGES=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "HAS_CHANGES=true"  >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Push release branch and open PR to main
+        if: ${{ steps.merge.outputs.HAS_CHANGES == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ steps.mk.outputs.BRANCH }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          git push -u origin "$BRANCH"
+
+          EXIST=$(gh pr list --repo "$REPO" --head "$BRANCH" --state all --json number --jq '.[0].number' || true)
+          if [ -n "${EXIST:-}" ]; then
+            echo "PR already exists for $BRANCH (#$EXIST)"
+          else
+            gh pr create --base main --head "$BRANCH" \
+              --title "${{ steps.form.outputs.TITLE }}" \
+              --body "Author: @${{ steps.form.outputs.GH_USERNAME }} | Base: \`${{ steps.form.outputs.BASE }}\` | Lookback: \`${{ steps.form.outputs.DAYS_BACK }}\` days"
+          fi
+
+      - name: Get PR info
+        id: pr
+        if: ${{ steps.merge.outputs.HAS_CHANGES == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ steps.mk.outputs.BRANCH }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          j=$(gh pr list --repo "$REPO" --head "$BRANCH" --state all \
+                --json number,url,title,baseRefName,headRefName,author --jq '.[0]')
+          if [ -z "$j" ] || [ "$j" = "null" ]; then
+            echo "::error::No PR found for head $BRANCH"; exit 1
+          fi
+          echo "number=$(jq -r .number <<<"$j")"       >> "$GITHUB_OUTPUT"
+          echo "url=$(jq -r .url <<<"$j")"             >> "$GITHUB_OUTPUT"
+          echo "title=$(jq -r .title <<<"$j")"         >> "$GITHUB_OUTPUT"
+          echo "base=$(jq -r .baseRefName <<<"$j")"    >> "$GITHUB_OUTPUT"
+          echo "head=$(jq -r .headRefName <<<"$j")"    >> "$GITHUB_OUTPUT"
+          echo "author=$(jq -r .author.login <<<"$j")" >> "$GITHUB_OUTPUT"
+
+      - name: Notify Slack via bot
+        if: ${{ steps.merge.outputs.HAS_CHANGES == 'true' && steps.pr.outputs.base == 'main' }}
+        uses: slackapi/slack-github-action@v1
+        with:
+          channel-id: C07SSBH5A3A
+          payload: |
+            {
+              "unfurl_links": false,
+              "unfurl_media": false,
+              "text": "Release PR needs approval — ${{ steps.form.outputs.TITLE }}",
+              "blocks": [
+                { "type": "header", "text": { "type": "plain_text", "text": "${{ steps.form.outputs.TITLE }}", "emoji": true } },
+                { "type": "section", "text": { "type": "mrkdwn",
+                  "text": "*Repo:* ${{ github.repository }}\n*Author:* @${{ steps.form.outputs.GH_USERNAME }}\n*PR:* <${{ steps.pr.outputs.url }}|#${{ steps.pr.outputs.number }} — ${{ steps.form.outputs.TITLE }}>\n*Target branch:* ${{ steps.pr.outputs.base }}\n*Filter:* Author: @${{ steps.form.outputs.GH_USERNAME }} | Base: ${{ steps.form.outputs.BASE }} | Lookback: ${{ steps.form.outputs.DAYS_BACK }} days"
+                }},
+                { "type": "context", "elements": [
+                  { "type": "mrkdwn", "text": "cc: ${{ steps.form.outputs.SLACK_CC }}" }
+                ]},
+                { "type": "actions", "elements": [
+                  { "type": "button", "text": { "type": "plain_text", "text": "Open PR" }, "url": "${{ steps.pr.outputs.url }}", "style": "primary" }
+                ]}
+              ]
+            }
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+
+      - name: Close the release request issue
+        if: ${{ steps.merge.outputs.HAS_CHANGES == 'true' && steps.pr.outputs.base == 'main' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue close ${{ github.event.issue.number }} \
+            --comment "Closed by release workflow. Opened PR: ${{ steps.pr.outputs.url }}"
+
