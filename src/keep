@@ -15,8 +15,7 @@ resource "aws_lambda_function" "my_lambda" {
 # hellohellohello
 # hellohellohello
 # kellokello
-# yelloyello
-# lellolello
+
 
 resource "aws_apigatewayv2_api" "lambda_api" {
   name          = "lambda_api"

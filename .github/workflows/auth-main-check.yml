@@ -12,16 +12,15 @@ on:
       - labeled
       - unlabeled
 
-permissions:
-  contents: read
-  pull-requests: write   # to close PR
-  issues: write          # to comment
-
 jobs:
   gate:
     name: Bot-or-label gate
     if: ${{ github.event.pull_request.base.ref == 'main' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write   # to close PR
+      issues: write          # to comment
 
     steps:
       - name: Evaluate gate
