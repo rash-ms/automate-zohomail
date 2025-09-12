@@ -1,13 +1,9 @@
-name: Staging one-shot [sync + gate]
+name: Staging sync gate
 
 on:
   pull_request:
     branches: [staging]
     types: [opened, synchronize, reopened, ready_for_review]
-
-permissions:
-  contents: write   # push to branches
-  pull-requests: write
 
 concurrency:
   group: staging-one-shot
@@ -16,6 +12,10 @@ concurrency:
 jobs:
   sync_and_gate:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write   # push to branches
+      pull-requests: write
+
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
@@ -35,10 +35,6 @@ jobs:
         id: ff
         run: |
           set -e
-          if git merge-base --is-ancestor origin/staging origin/main; then
-            echo "staging_ahead_or_equal=1" >> $GITHUB_OUTPUT
-            exit 0
-          fi
           if git merge-base --is-ancestor origin/staging origin/main; then
             echo "staging_ahead_or_equal=1" >> $GITHUB_OUTPUT
             exit 0

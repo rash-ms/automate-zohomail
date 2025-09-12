@@ -4,15 +4,16 @@ on:
   issues:
     types: [labeled]
 
-permissions:
-  contents: write
-  pull-requests: write
-  issues: write
+
 
 jobs:
   build:
     if: ${{ github.event.label.name == 'release-request' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
 
     steps:
       - uses: actions/checkout@v4
