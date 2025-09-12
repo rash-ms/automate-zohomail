@@ -1,4 +1,4 @@
-name: Staging one-shot [sync + gate]
+name: Staging sync gate
 
 on:
   pull_request:
