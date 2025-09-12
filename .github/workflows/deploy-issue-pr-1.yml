@@ -1,0 +1,269 @@
+#name: Build release from Issue Form
+#
+#on:
+#  issues:
+#    types: [labeled]
+#
+#concurrency:
+#  group: release-from-issue-${{ github.event.issue.number }}
+#  cancel-in-progress: true
+#
+#jobs:
+#  build:
+#    if: ${{ github.event.label.name == 'release-request' }}
+#    runs-on: ubuntu-latest
+#    permissions:
+#      contents: write
+#      pull-requests: write
+#      issues: write
+#
+#    steps:
+#      - uses: actions/checkout@v4
+#        with: { fetch-depth: 0 }
+#
+#      - name: Configure git
+#        run: |
+#          git config user.name  "release-bot"
+#          git config user.email "release-bot@users.noreply.github.com"
+#
+#      - name: Read and validate form values (fail if missing)
+#        id: form
+#        env:
+#          REPO: ${{ github.repository }}
+#        run: |
+#          set -euo pipefail
+#          BODY="$RUNNER_TEMP/body.txt"
+#
+#          jq -r '.issue.body'  "$GITHUB_EVENT_PATH" > "$BODY"
+#          TITLE=$(jq -r '.issue.title' "$GITHUB_EVENT_PATH" | tr -d '\r' | head -n1)
+#
+#          # Write exact Issue Form body
+#          cat > "$BODY" <<'EOF'
+#          ${{ github.event.issue.body }}
+#          EOF
+#
+#          # helpers
+#          get_field () {
+#            awk -v prefix="$1" '
+#              BEGIN{flag=0}
+#              /^###[[:space:]]/{
+#                line=$0; sub(/^###[[:space:]]*/,"",line)
+#                if (index(line, prefix)==1) { flag=1; next } else { flag=0 }
+#              }
+#              flag { print }
+#            ' "$BODY" | sed '/^[[:space:]]*$/d' | head -n 1 | xargs
+#          }
+#          get_section_lines () {
+#            awk -v prefix="$1" '
+#              BEGIN{flag=0}
+#              /^###[[:space:]]/{
+#                line=$0; sub(/^###[[:space:]]*/,"",line)
+#                if (index(line, prefix)==1) { flag=1; next } else { flag=0 }
+#              }
+#              flag { print }
+#            ' "$BODY" | sed '/^[[:space:]]*$/d'
+#          }
+#
+#          GH_USERNAME=$(get_field "GitHub username")
+#          BASE=$(get_field "Base PRs branch (e.g. staging)")
+#          STATE=$(get_field "PR status")
+#          DAYS_BACK=$(get_field "Lookback window (days)")
+#          SLACK_CC=$(get_section_lines "Reviewer" | sed 's/^- *//' | paste -sd' ' - || true)
+#
+#          # Optional extra PRs (numbers or URLs)
+#          EXTRA=$(
+#            get_section_lines "Extra PR numbers or URLs to include (optional)" \
+#            | sed 's/.*pull\///' | sed 's/[^0-9].*$//' | grep -E '^[0-9]+$' || true
+#          )
+#
+#          for var in GH_USERNAME BASE STATE DAYS_BACK; do
+#            eval v=\$$var
+#            if [ -z "$v" ]; then
+#              echo "::error::$var is required in the issue form"; exit 1
+#            fi
+#          done
+#
+#          OPENER="${{ github.event.issue.user.login }}"
+#          if [ "$OPENER" != "$GH_USERNAME" ]; then
+#            echo "::error::Issue opener ($OPENER) must match GH username ($GH_USERNAME)"; exit 1
+#          fi
+#
+#          {
+#            echo "GH_USERNAME=$GH_USERNAME"
+#            echo "BASE=$BASE"
+#            echo "STATE=$STATE"
+#            echo "DAYS_BACK=$DAYS_BACK"
+#            echo "SLACK_CC=$SLACK_CC"
+#            echo "EXTRA=$(echo "$EXTRA" | paste -sd, -)"
+#            echo "TITLE=$TITLE"
+#          } >> "$GITHUB_OUTPUT"
+#
+#      - name: Find PRs by author/base/state updated within days_back
+#        id: find
+#        env:
+#          GH_TOKEN: ${{ github.token }}
+#          REPO: ${{ github.repository }}
+#          GH_USERNAME: ${{ steps.form.outputs.GH_USERNAME }}
+#          BASE: ${{ steps.form.outputs.BASE }}
+#          STATE: ${{ steps.form.outputs.STATE }}
+#          DAYS: ${{ steps.form.outputs.DAYS_BACK }}
+#        run: |
+#          set -euo pipefail
+#          SINCE=$(date -u -d "-${DAYS:-14} days" +%Y-%m-%d)
+#
+#          # Use gh pr list (stable) instead of gh api /search/issues
+#          CAND=$(
+#            gh pr list \
+#              --repo "$REPO" \
+#              --author "$GH_USERNAME" \
+#              --base "$BASE" \
+#              --state "$STATE" \
+#              --search "updated:>=$SINCE" \
+#              --json number --jq '.[].number' \
+#            || true
+#          )
+#
+#          if [ -z "${CAND:-}" ]; then
+#            echo "::error::No PRs found for author=$GH_USERNAME base=$BASE state=$STATE updated:>=$SINCE"; exit 1
+#          fi
+#
+#          PRS=$(printf '%s\n' $CAND | sort -u | paste -sd, -)
+#          echo "PRS=$PRS" >> "$GITHUB_OUTPUT"
+#          echo "Filtered PRs: $PRS"
+#
+#      - name: Combine with any extra PRs
+#        id: combine
+#        run: |
+#          A="${{ steps.find.outputs.PRS }}"
+#          B="${{ steps.form.outputs.EXTRA }}"
+#          LIST=$(printf "%s\n%s\n" "$A" "$B" | tr ',' '\n' | grep -E '^[0-9]+$' | sort -u | paste -sd, -)
+#          if [ -z "$LIST" ]; then
+#            echo "::error::No PRs to include after combining."; exit 1
+#          fi
+#          echo "PR_LIST=$LIST" >> $GITHUB_OUTPUT
+#          echo "Including PRs: $LIST"
+#
+#      - name: Create release branch from main
+#        id: mk
+#        run: |
+#
+#          USER_SLUG='${{ github.event.issue.user.login }}'
+#          BR="${USER_SLUG}/${{ github.run_id }}-${{ github.run_attempt }}"
+#
+#          git fetch origin main
+#          git switch -c "$BR" origin/main
+#
+#          echo "BRANCH=$BR" >> "$GITHUB_OUTPUT"
+#
+#      - name: Merge selected PRs (squash commits)
+#        id: merge
+#        env:
+#          GH_TOKEN: ${{ github.token }}
+#          PRS: ${{ steps.combine.outputs.PR_LIST }}
+#        run: |
+#          set -euo pipefail
+#          IFS=, read -ra arr <<< "$PRS"
+#          for PR in "${arr[@]}"; do
+#            PR=$(echo "$PR" | xargs)
+#            TITLE=$(gh pr view "$PR" --json title --jq .title)
+#
+#            echo "Including PR #$PR — $TITLE"
+#
+#            git fetch --no-tags origin "pull/$PR/head:pr-$PR"
+#            git merge --squash "pr-$PR" || {
+#              echo "::error::Merge conflicts while squashing PR #$PR"; exit 1;
+#            }
+#
+#            if git diff --cached --quiet; then
+#              echo "No changes to include from PR #$PR (already merged or identical). Skipping."
+#              git reset
+#            else
+#              git commit -m "Include PR #$PR: $TITLE"
+#            fi
+#            git branch -D "pr-$PR" || true
+#          done
+#
+#          if git diff --quiet origin/main..HEAD; then
+#            echo "HAS_CHANGES=false" >> "$GITHUB_OUTPUT"
+#          else
+#            echo "HAS_CHANGES=true" >> "$GITHUB_OUTPUT"
+#          fi
+#
+#      - name: Push release branch and open PR to main
+#        if: ${{ steps.merge.outputs.HAS_CHANGES == 'true' }}
+#        env:
+#          GH_TOKEN: ${{ github.token }}
+#          BRANCH: ${{ steps.mk.outputs.BRANCH }}
+#          REPO: ${{ github.repository }}
+#        run: |
+#          set -euo pipefail
+#          git push -u origin "$BRANCH"
+#
+#          # Does a PR for this head branch already exist?
+#          EXIST=$(gh pr list --repo "$REPO" --head "$BRANCH" --state all --json number --jq '.[0].number' || true)
+#
+#          if [ -n "${EXIST:-}" ]; then
+#            echo "PR already exists for $BRANCH (#$EXIST)"
+#          else
+#            gh pr create --base main --head "$BRANCH" \
+#              --title "${{ steps.form.outputs.TITLE }}" \
+#              --body "Author: @${{ steps.form.outputs.GH_USERNAME }} | Base: \`${{ steps.form.outputs.BASE }}\` | Lookback: \`${{ steps.form.outputs.DAYS_BACK }}\` days"
+#
+#          fi
+#
+#      - name: Get PR info
+#        id: pr
+#        if: ${{ steps.merge.outputs.HAS_CHANGES == 'true' }}
+#        env:
+#          GH_TOKEN: ${{ github.token }}
+#          BRANCH: ${{ steps.mk.outputs.BRANCH }}
+#          REPO: ${{ github.repository }}
+#        run: |
+#          set -euo pipefail
+#          j=$(gh pr list --repo "$REPO" --head "$BRANCH" --state all \
+#                --json number,url,title,baseRefName,headRefName,author \
+#                --jq '.[0]')
+#          if [ -z "$j" ] || [ "$j" = "null" ]; then
+#            echo "::error::No PR found for head $BRANCH"; exit 1
+#          fi
+#          echo "number=$(jq -r .number <<<"$j")" >> "$GITHUB_OUTPUT"
+#          echo "url=$(jq -r .url <<<"$j")"       >> "$GITHUB_OUTPUT"
+#          echo "title=$(jq -r .title <<<"$j")"   >> "$GITHUB_OUTPUT"
+#          echo "base=$(jq -r .baseRefName <<<"$j")" >> "$GITHUB_OUTPUT"
+#          echo "head=$(jq -r .headRefName <<<"$j")" >> "$GITHUB_OUTPUT"
+#          echo "author=$(jq -r .author.login <<<"$j")" >> "$GITHUB_OUTPUT"
+#
+#      - name: Notify Slack via bot
+#        if: ${{ steps.merge.outputs.HAS_CHANGES == 'true' && steps.pr.outputs.base == 'main' }}
+#        uses: slackapi/slack-github-action@v1
+#        with:
+#          channel-id: C07SSBH5A3A
+#          payload: |
+#            {
+#              "unfurl_links": false,
+#              "unfurl_media": false,
+#              "text": "Release PR needs approval — ${{ steps.form.outputs.TITLE }}",
+#              "blocks": [
+#                { "type": "header", "text": { "type": "plain_text", "text": "${{ steps.form.outputs.TITLE }}", "emoji": true } },
+#                { "type": "section", "text": { "type": "mrkdwn",
+#                  "text": "*Repo:* ${{ github.repository }}\n*Author:* @${{ steps.form.outputs.GH_USERNAME }}\n*PR:* <${{ steps.pr.outputs.url }}|#${{ steps.pr.outputs.number }} — ${{ steps.form.outputs.TITLE }}>\n*Target_Branch:* ${{ steps.pr.outputs.base }}\n*Filter:* Author: @${{ steps.form.outputs.GH_USERNAME }} | Base: ${{ steps.form.outputs.BASE }} | Lookback: ${{ steps.form.outputs.DAYS_BACK }} days"
+#                }},
+#                { "type": "context", "elements": [
+#                  { "type": "mrkdwn", "text": "cc: ${{ steps.form.outputs.SLACK_CC }}" }
+#                ]},
+#                { "type": "actions", "elements": [
+#                  { "type": "button", "text": { "type": "plain_text", "text": "Open PR" }, "url": "${{ steps.pr.outputs.url }}", "style": "primary" }
+#                ]}
+#              ]
+#            }
+#        env:
+#          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+#
+#      - name: Close the release request issue
+#        if: ${{ steps.merge.outputs.HAS_CHANGES == 'true' && steps.pr.outputs.base == 'main' }}
+#        env:
+#          GH_TOKEN: ${{ github.token }}
+#        run: |
+#          gh issue close ${{ github.event.issue.number }} \
+#            --comment "Closed by release workflow. Opened PR: ${{ steps.pr.outputs.url }}"
+#
