@@ -30,16 +30,16 @@ jobs:
         run: |
           set -euo pipefail
           BODY="$RUNNER_TEMP/body.txt"
-      
-          jq -r '.issue.body'  "$GITHUB_EVENT_PATH" > "$BODY"
+
+          # Title from Issue (single line)
           TITLE=$(jq -r '.issue.title' "$GITHUB_EVENT_PATH" | tr -d '\r' | head -n1)
-          
-          # Write exact Issue Form body
+
+          # Write the exact Issue Form body (no shell interpolation)
           cat > "$BODY" <<'EOF'
           ${{ github.event.issue.body }}
           EOF
-    
-          # helpers
+
+          # helpers to extract fields from the Issue Form body
           get_field () {
             awk -v prefix="$1" '
               BEGIN{flag=0}
@@ -73,6 +73,7 @@ jobs:
             | sed 's/.*pull\///' | sed 's/[^0-9].*$//' | grep -E '^[0-9]+$' || true
           )
 
+          # Required fields
           for var in GH_USERNAME BASE STATE DAYS_BACK; do
             eval v=\$$var
             if [ -z "$v" ]; then
@@ -80,6 +81,7 @@ jobs:
             fi
           done
 
+          # The Issue opener must match declared username
           OPENER="${{ github.event.issue.user.login }}"
           if [ "$OPENER" != "$GH_USERNAME" ]; then
             echo "::error::Issue opener ($OPENER) must match GH username ($GH_USERNAME)"; exit 1
@@ -92,7 +94,7 @@ jobs:
             echo "DAYS_BACK=$DAYS_BACK"
             echo "SLACK_CC=$SLACK_CC"
             echo "EXTRA=$(echo "$EXTRA" | paste -sd, -)"
-            echo "TITLE=$TITLE" 
+            echo "TITLE=$TITLE"
           } >> "$GITHUB_OUTPUT"
 
       - name: Find PRs by author/base/state updated within days_back
@@ -108,7 +110,6 @@ jobs:
           set -euo pipefail
           SINCE=$(date -u -d "-${DAYS:-14} days" +%Y-%m-%d)
 
-          # Use gh pr list (stable) instead of gh api /search/issues
           CAND=$(
             gh pr list \
               --repo "$REPO" \
@@ -137,52 +138,122 @@ jobs:
           if [ -z "$LIST" ]; then
             echo "::error::No PRs to include after combining."; exit 1
           fi
-          echo "PR_LIST=$LIST" >> $GITHUB_OUTPUT
+          echo "PR_LIST=$LIST" >> "$GITHUB_OUTPUT"
           echo "Including PRs: $LIST"
 
-      - name: Create release branch from main
+      - name: Create release branch from selected base
         id: mk
         run: |
-          git fetch origin main
-          
+          set -euo pipefail
           USER_SLUG='${{ github.event.issue.user.login }}'
           BR="${USER_SLUG}/${{ github.run_id }}-${{ github.run_attempt }}"
-          
-          git switch -c "$BR" origin/main
-          echo "BRANCH=$BR" >> "$GITHUB_OUTPUT"
+          BASE='${{ steps.form.outputs.BASE }}'
 
-      - name: Merge selected PRs (squash commits)
-        id: merge
+          git fetch origin "$BASE"
+          git switch -c "$BR" "origin/$BASE"
+
+          echo "BRANCH=$BR"  >> "$GITHUB_OUTPUT"
+          echo "BASE=$BASE"  >> "$GITHUB_OUTPUT"
+
+      # --- NEW: preflight (fail if any PR would conflict) -------------------------
+      - name: Preflight — fail if any PR conflicts
+        id: preflight
         env:
           GH_TOKEN: ${{ github.token }}
           PRS: ${{ steps.combine.outputs.PR_LIST }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          BLOCKERS=()
+          IFS=, read -ra arr <<< "$PRS"
+      
+          for PR in "${arr[@]}"; do
+            PR=$(echo "$PR" | xargs)
+      
+            # Try on a clean tree each time
+            git reset --hard
+      
+            # Fetch head for this PR (local branch pr-<number>)
+            git fetch --no-tags origin "pull/$PR/head:pr-$PR"
+      
+            # Dry-run attempt: apply without committing
+            if ! git merge --no-commit --squash "pr-$PR" >/dev/null 2>&1; then
+              echo "::error::Would conflict when applying PR #$PR"
+              BLOCKERS+=("$PR")
+              # Clean merge state
+              git merge --abort || git reset --merge || git reset --hard
+            else
+              # Clean up before next PR
+              git reset --hard
+            fi
+      
+            git branch -D "pr-$PR" || true
+          done
+      
+          if [ ${#BLOCKERS[@]} -gt 0 ]; then
+            echo "blockers=$(IFS=,; echo "${BLOCKERS[*]}")" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+      # --- NEW: notify authors of conflicting PRs ---------------------------------
+      - name: Notify blockers to rebase
+        if: ${{ steps.preflight.outcome == 'failure' && steps.preflight.outputs.blockers != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BASE: ${{ steps.form.outputs.BASE }}
+        run: |
+          set -euo pipefail
+          IFS=, read -ra arr <<< "${{ steps.preflight.outputs.blockers }}"
+          for PR in "${arr[@]}"; do
+            PR=$(echo "$PR" | xargs)
+            gh pr comment "$PR" --body "This PR conflicts with the release build. Please update your branch to \`$BASE\` (rebase or merge) and push again."
+          done
+
+      # --- REPLACE your old merge step with this: runs only if preflight passed ---
+      - name: Merge selected PRs (squash commits; fail on conflict)
+        id: merge
+        if: ${{ steps.preflight.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRS: ${{ steps.combine.outputs.PR_LIST }}
+          BASE: ${{ steps.form.outputs.BASE }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           IFS=, read -ra arr <<< "$PRS"
           for PR in "${arr[@]}"; do
             PR=$(echo "$PR" | xargs)
-            TITLE=$(gh pr view "$PR" --json title --jq .title)
-
+      
+            # Ensure the PR actually targets the selected base (hard stop if not)
+            BASE_REF=$(gh pr view "$PR" --repo "$REPO" --json baseRefName --jq .baseRefName)
+            if [ "$BASE_REF" != "$BASE" ]; then
+              echo "::error::PR #$PR targets '$BASE_REF' but you selected base '$BASE'."; exit 1
+            fi
+      
+            TITLE=$(gh pr view "$PR" --repo "$REPO" --json title --jq .title)
             echo "Including PR #$PR — $TITLE"
-
+      
             git fetch --no-tags origin "pull/$PR/head:pr-$PR"
             git merge --squash "pr-$PR" || {
-              echo "::error::Merge conflicts while squashing PR #$PR"; exit 1;
+              echo "::error::Merge conflicts while squashing PR #$PR"
+              git merge --abort || git reset --merge || git reset --hard
+              exit 1
             }
-
+      
             if git diff --cached --quiet; then
-              echo "No changes to include from PR #$PR (already merged or identical). Skipping."
+              echo "No changes to include from PR #$PR (already merged or identical)."
               git reset
             else
               git commit -m "Include PR #$PR: $TITLE"
             fi
             git branch -D "pr-$PR" || true
           done
-
-          if git diff --quiet origin/main..HEAD; then
+      
+          if git diff --quiet "origin/$BASE"..HEAD; then
             echo "HAS_CHANGES=false" >> "$GITHUB_OUTPUT"
           else
-            echo "HAS_CHANGES=true" >> "$GITHUB_OUTPUT"
+            echo "HAS_CHANGES=true"  >> "$GITHUB_OUTPUT"
           fi
 
       - name: Push release branch and open PR to main
@@ -195,17 +266,13 @@ jobs:
           set -euo pipefail
           git push -u origin "$BRANCH"
 
-          # Does a PR for this head branch already exist?
           EXIST=$(gh pr list --repo "$REPO" --head "$BRANCH" --state all --json number --jq '.[0].number' || true)
-
           if [ -n "${EXIST:-}" ]; then
             echo "PR already exists for $BRANCH (#$EXIST)"
-          else            
+          else
             gh pr create --base main --head "$BRANCH" \
               --title "${{ steps.form.outputs.TITLE }}" \
               --body "Author: @${{ steps.form.outputs.GH_USERNAME }} | Base: \`${{ steps.form.outputs.BASE }}\` | Lookback: \`${{ steps.form.outputs.DAYS_BACK }}\` days"
-
-
           fi
 
       - name: Get PR info
@@ -218,16 +285,15 @@ jobs:
         run: |
           set -euo pipefail
           j=$(gh pr list --repo "$REPO" --head "$BRANCH" --state all \
-                --json number,url,title,baseRefName,headRefName,author \
-                --jq '.[0]')
+                --json number,url,title,baseRefName,headRefName,author --jq '.[0]')
           if [ -z "$j" ] || [ "$j" = "null" ]; then
             echo "::error::No PR found for head $BRANCH"; exit 1
           fi
-          echo "number=$(jq -r .number <<<"$j")" >> "$GITHUB_OUTPUT"
-          echo "url=$(jq -r .url <<<"$j")"       >> "$GITHUB_OUTPUT"
-          echo "title=$(jq -r .title <<<"$j")"   >> "$GITHUB_OUTPUT"
-          echo "base=$(jq -r .baseRefName <<<"$j")" >> "$GITHUB_OUTPUT"
-          echo "head=$(jq -r .headRefName <<<"$j")" >> "$GITHUB_OUTPUT"
+          echo "number=$(jq -r .number <<<"$j")"       >> "$GITHUB_OUTPUT"
+          echo "url=$(jq -r .url <<<"$j")"             >> "$GITHUB_OUTPUT"
+          echo "title=$(jq -r .title <<<"$j")"         >> "$GITHUB_OUTPUT"
+          echo "base=$(jq -r .baseRefName <<<"$j")"    >> "$GITHUB_OUTPUT"
+          echo "head=$(jq -r .headRefName <<<"$j")"    >> "$GITHUB_OUTPUT"
           echo "author=$(jq -r .author.login <<<"$j")" >> "$GITHUB_OUTPUT"
 
       - name: Notify Slack via bot
@@ -241,9 +307,9 @@ jobs:
               "unfurl_media": false,
               "text": "Release PR needs approval — ${{ steps.form.outputs.TITLE }}",
               "blocks": [
-                { "type": "header", "text": { "type": "plain_text", "text": "${{ steps.form.outputs.TITLE }}", "emoji": true } },            
+                { "type": "header", "text": { "type": "plain_text", "text": "${{ steps.form.outputs.TITLE }}", "emoji": true } },
                 { "type": "section", "text": { "type": "mrkdwn",
-                  "text": "*Repo:* ${{ github.repository }}\n*Author:* @${{ steps.form.outputs.GH_USERNAME }}\n*PR:* <${{ steps.pr.outputs.url }}|#${{ steps.pr.outputs.number }} — ${{ steps.form.outputs.TITLE }}>\n*Target_Branch:* ${{ steps.pr.outputs.base }}\n*Filter:* Author: @${{ steps.form.outputs.GH_USERNAME }} | Base: ${{ steps.form.outputs.BASE }} | Lookback: ${{ steps.form.outputs.DAYS_BACK }} days"
+                  "text": "*Repo:* ${{ github.repository }}\n*Author:* @${{ steps.form.outputs.GH_USERNAME }}\n*PR:* <${{ steps.pr.outputs.url }}|#${{ steps.pr.outputs.number }} — ${{ steps.form.outputs.TITLE }}>\n*Target branch:* ${{ steps.pr.outputs.base }}\n*Filter:* Author: @${{ steps.form.outputs.GH_USERNAME }} | Base: ${{ steps.form.outputs.BASE }} | Lookback: ${{ steps.form.outputs.DAYS_BACK }} days"
                 }},
                 { "type": "context", "elements": [
                   { "type": "mrkdwn", "text": "cc: ${{ steps.form.outputs.SLACK_CC }}" }
@@ -263,4 +329,3 @@ jobs:
         run: |
           gh issue close ${{ github.event.issue.number }} \
             --comment "Closed by release workflow. Opened PR: ${{ steps.pr.outputs.url }}"
-
