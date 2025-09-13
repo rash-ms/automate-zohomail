@@ -45,7 +45,7 @@ jobs:
   # ---------- Issue-driven release dispatcher ----------
   release-dispatch:
     if: ${{ github.event_name == 'issues' && contains(github.event.issue.labels.*.name, 'release-request') }}
-    uses: rash-ms/planet-workflow/.github/workflows/stg-pr-main.yml@v1.0.1
+    uses: rash-ms/planet-workflow/.github/workflows/stg-pr-main.yml@v1.0.0
     with:
       issue_body:    ${{ github.event.issue.body }}
       issue_number:  ${{ github.event.issue.number }}
