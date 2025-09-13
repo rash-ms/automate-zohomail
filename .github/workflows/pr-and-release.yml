@@ -6,7 +6,7 @@ on:
     branches: [ main, staging ]
     types: [ opened, reopened, synchronize, edited, ready_for_review, labeled, unlabeled ]
   issues:
-    types: [ opened, edited, labeled ]
+    types: [ opened]
 
 permissions:
   contents: write
