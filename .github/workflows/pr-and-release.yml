@@ -17,7 +17,7 @@ jobs:
   # ---------- PR to STAGING ----------
   stage-pr:
     if: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'staging' }}
-    uses: rash-ms/planet-workflow/.github/workflows/stage-pr-checks.yml@v1.0.0
+    uses: rash-ms/planet-workflow/.github/workflows/stage-pr-checks.yml@1.0.0
     with:
       base_branch:  staging
       trunk_branch: main                  # change if your trunk isn’t 'main'
@@ -31,7 +31,7 @@ jobs:
   # ---------- PR to MAIN ----------
   main-pr:
     if: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'main' }}
-    uses: rash-ms/planet-workflow/.github/workflows/main-pr-checks.yml@v1.0.0
+    uses: rash-ms/planet-workflow/.github/workflows/main-pr-checks.yml@1.0.0
     with:
       base_branch:  main
       trunk_branch: staging               # or 'develop' (whatever you sync from)
@@ -45,7 +45,7 @@ jobs:
   # ---------- Issue-driven release dispatcher ----------
   release-dispatch:
     if: ${{ github.event_name == 'issues' && contains(github.event.issue.labels.*.name, 'release-request') }}
-    uses: rash-ms/planet-workflow/.github/workflows/stg-pr-main.yml@v1.0.0
+    uses: rash-ms/planet-workflow/.github/workflows/stg-pr-main.yml@1.0.0
     with:
       issue_body:    ${{ github.event.issue.body }}
       issue_number:  ${{ github.event.issue.number }}
@@ -54,3 +54,9 @@ jobs:
       slack_channel: C07SSBH5A3A
     secrets:
       slack_bot_token: ${{ secrets.SLACK_BOT_TOKEN }}
+
+rash-ms/planet-workflow/:
+  github/workflows/stg-pr-main:
+    yml@1:
+      0:
+        0:
