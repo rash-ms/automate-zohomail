@@ -1,0 +1,47 @@
+# .github/workflows/pr-and-release.yml (staging & main)
+name: PR Gates & Release Dispatcher
+
+on:
+  pull_request:
+    branches: [main, staging]
+    types: [opened, reopened, synchronize, edited, ready_for_review, labeled, unlabeled]
+  issues:
+    types: [opened, edited, labeled]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  flow:
+    runs-on: ubuntu-latest
+
+    concurrency:
+      group: pr-gate-${{ github.event.pull_request.base.ref }}
+      cancel-in-progress: false
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Stage PR Validation
+        if: ${{ github.event.pull_request.base.ref == 'staging' }}
+        uses: rash-ms/planet-workflow/.github/actions/stage-pr-checks@1.0.0
+
+      - name: Main PR Validation
+        if: ${{ github.event.pull_request.base.ref == 'main' }}
+        uses: rash-ms/planet-workflow/.github/actions/main-pr-checks@1.0.0
+
+      - name: Release PR to Main
+        if: ${{ github.event_name == 'issues' && contains(github.event.issue.labels.*.name, 'release-request') }}
+        uses: rash-ms/planet-workflow/.github/workflows/stg-pr-main.yml@1.0.0
+        with:
+          issue_body:   ${{ github.event.issue.body }}
+          issue_number: ${{ github.event.issue.number }}
+          issue_opener: ${{ github.event.issue.user.login }}
+          repository:   ${{ github.repository }}
+          slack_channel: C07SSBH5A3A
+        secrets:
+          slack_bot_token: ${{ secrets.SLACK_BOT_TOKEN }}

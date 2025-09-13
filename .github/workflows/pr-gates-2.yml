@@ -1,0 +1,137 @@
+## .github/workflows/pr-gates.yml (staging & main)
+#name: PR Gates
+#
+#on:
+#  pull_request:
+#    branches: [main, staging]
+#    types: [opened, reopened, synchronize, edited, ready_for_review, labeled, unlabeled]
+#
+## Keep runs for main vs staging isolated
+#concurrency:
+#  group: pr-gate-${{ github.event.pull_request.base.ref }}
+#  cancel-in-progress: false
+#
+#jobs:
+#  # ---------- STAGING: sync + gate ----------
+#  staging_sync_gate:
+#    name: Staging sync gate
+#    if: ${{ github.event.pull_request.base.ref == 'staging' }}
+#    runs-on: ubuntu-latest
+#    permissions:
+#      contents: write          # push to branches
+#      pull-requests: write
+#    steps:
+#      - uses: actions/checkout@v4
+#        with: { fetch-depth: 0 }
+#
+#      - name: Configure git
+#        run: |
+#          git config user.name  "github-actions[bot]"
+#          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+#
+#      - name: Fetch refs
+#        run: |
+#          git fetch origin +refs/heads/main:refs/remotes/origin/main
+#          git fetch origin +refs/heads/staging:refs/remotes/origin/staging
+#          git fetch origin +refs/pull/${{ github.event.pull_request.number }}/head:refs/remotes/origin/pr-head || true
+#
+#      # 1) Immediately sync staging with main (fail on conflicts)
+#      - name: Fast-forward staging to main if possible
+#        id: ff
+#        run: |
+#          set -e
+#          # if staging already includes main, nothing to do
+#          if git merge-base --is-ancestor origin/main origin/staging; then
+#            echo "already_contains_main=1" >> $GITHUB_OUTPUT
+#            exit 0
+#          fi
+#
+#      - name: Push sync (FF or clean merge)
+#        id: pushsync
+#        run: |
+#          set -e
+#          git checkout -B staging origin/staging
+#          # Try FF first
+#          git merge --ff-only origin/main || \
+#          git merge --no-edit origin/main || { echo "::error::Conflicts syncing main → staging. Resolve manually."; exit 1; }
+#          git push origin HEAD:staging
+#
+#      - name: Verify staging now contains main
+#        run: |
+#          git fetch origin +refs/heads/staging:refs/remotes/origin/staging
+#          if ! git merge-base --is-ancestor origin/main origin/staging; then
+#            echo "::error::staging is not synced with main (conflicts likely)."
+#            exit 1
+#          fi
+#
+#      # 2) Ensure PR branch has latest staging (auto-merge; fail on conflicts)
+#      - name: Ensure PR branch contains staging (auto-merge)
+#        run: |
+#          git fetch origin "+refs/heads/${{ github.head_ref }}:refs/remotes/origin/${{ github.head_ref }}"
+#          git checkout -B pr-branch "origin/${{ github.head_ref }}"
+#          if ! git merge-base --is-ancestor origin/staging pr-branch; then
+#            git merge --no-edit --no-ff origin/staging || {
+#              echo "::error::Conflicts merging staging into your branch. Please merge/rebase locally and push.";
+#              exit 1
+#            }
+#            git push origin "HEAD:${{ github.head_ref }}"
+#          fi
+#
+#      # 3) Final gate
+#      - name: Final gate
+#        run: |
+#          git fetch origin +refs/heads/staging:refs/remotes/origin/staging
+#          if ! git merge-base --is-ancestor origin/staging "origin/${{ github.head_ref }}"; then
+#            echo "::error::Your branch is not up to date with staging."
+#            exit 1
+#          fi
+#
+#  # ---------- MAIN: enforce label/bot rule ----------
+#  main_merge_rule_gate:
+#    name: Enforce Merge Rules to Main
+#    if: ${{ github.event.pull_request.base.ref == 'main' }}
+#    runs-on: ubuntu-latest
+#    permissions:
+#      contents: read
+#      pull-requests: write   # to close PR
+#      issues: write          # to comment
+#    steps:
+#      - name: Evaluate gate
+#        env:
+#          GH_TOKEN: ${{ github.token }}
+#          REPO: ${{ github.repository }}
+#          REQUIRED_LABEL: release-request
+#        run: |
+#          set -euo pipefail
+#
+#          PR=$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH")
+#          AUTHOR=$(jq -r '.pull_request.user.login' "$GITHUB_EVENT_PATH")
+#
+#          # Fetch labels fresh (case-insensitive compare)
+#          readarray -t LABELS < <(gh api "repos/$REPO/issues/$PR/labels" --jq '.[].name' | tr '[:upper:]' '[:lower:]')
+#
+#          echo "PR #$PR  author=$AUTHOR  labels=${LABELS[*]}"
+#
+#          # Pass if bot
+#          if [[ "$AUTHOR" == "github-actions[bot]" ]]; then
+#            echo "PASS: opened by github-actions[bot]"; exit 0
+#          fi
+#
+#          # Pass if required label present
+#          REQ=$(echo "$REQUIRED_LABEL" | tr '[:upper:]' '[:lower:]')
+#          if printf '%s\n' "${LABELS[@]}" | grep -qx "$REQ"; then
+#            echo "PASS: label '$REQ' present"; exit 0
+#          fi
+#
+#          echo "::error::Blocked: PRs to main must be opened by github-actions[bot] OR have label '$REQUIRED_LABEL'."
+#          exit 1
+#
+#      - name: Comment & close non-compliant PR
+#        if: failure()
+#        env:
+#          GH_TOKEN: ${{ github.token }}
+#          REQUIRED_LABEL: release-request
+#        run: |
+#          PR=$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH")
+#          gh pr comment "$PR" --body "This branch only accepts PRs opened by \`github-actions[bot]\` or labeled \`$REQUIRED_LABEL\`."
+#          gh pr close "$PR"
