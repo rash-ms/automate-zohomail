@@ -34,7 +34,9 @@ jobs:
     uses: rash-ms/planet-workflow/.github/workflows/main-pr-checks.yml@1.0.0
     with:
       base_branch:  main
-      repository:   ${{ github.repository }}
+#      trunk_branch: staging               # or 'develop' (whatever you sync from)
+#      pr_head:      ${{ github.event.pull_request.head.ref }}
+#      repository:   ${{ github.repository }}
     secrets: inherit
     concurrency:
       group: pr-gate-main
