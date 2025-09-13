@@ -54,9 +54,3 @@ jobs:
       slack_channel: C07SSBH5A3A
     secrets:
       slack_bot_token: ${{ secrets.SLACK_BOT_TOKEN }}
-
-rash-ms/planet-workflow/:
-  github/workflows/stg-pr-main:
-    yml@1:
-      0:
-        0:
