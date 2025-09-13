@@ -26,6 +26,9 @@ resource "aws_apigatewayv2_api" "lambda_api" {
   protocol_type = "HTTP"
 }
 
+# WelcomeWelcome
+# WelcomeWelcome
+
 resource "aws_lambda_permission" "api_gateway_invoke" {
   statement_id  = "AllowAPIGatewayInvoke"
   action        = "lambda:InvokeFunction"
