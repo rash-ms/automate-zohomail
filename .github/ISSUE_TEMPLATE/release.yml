@@ -1,5 +1,5 @@
-name: Promote to Prod
-description: Build a release from PRs authored by you that target the base branch and have your unique label.
+name: Promote PR to Prod
+description: Build a PR from stage to target branch.
 title: "Release: <short description>"
 labels: ["release-request"]
 body:
@@ -20,6 +20,15 @@ body:
       required: true
 
   - type: input
+    id: skip_pr
+    attributes:
+      label: Prod Hold (label name)
+      description: "Hold out of production releases."
+      value: "skip-prod"
+    validations:
+      required: true
+
+  - type: input
     id: days_back
     attributes:
       label: Lookback window (days)
@@ -27,8 +36,6 @@ body:
       description: "Include PRs updated within the past N days."
     validations:
       required: true
-
-    #options: ["open", "merged"]
 
   - type: dropdown
     id: state
@@ -49,14 +56,6 @@ body:
       options:
         - "<@U03V6VD8JHL> Muj"
         - "<@U08H78BN7K3> Nai"
-    validations:
-      required: false
-
-  - type: textarea
-    id: extra_prs
-    attributes:
-      label: Extra PR numbers or URLs to include (optional)
-      placeholder: "123\nhttps://github.com/org/repo/pull/456"
     validations:
       required: false
 
