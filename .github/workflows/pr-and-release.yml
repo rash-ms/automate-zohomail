@@ -34,6 +34,8 @@ jobs:
     uses: rash-ms/planet-workflow/.github/workflows/main-pr-checks.yml@1.0.0
     with:
       base_branch:  main
+      required_label: release-request
+      allowed_bot: github-actions[bot]
 #      trunk_branch: staging               # or 'develop' (whatever you sync from)
 #      pr_head:      ${{ github.event.pull_request.head.ref }}
 #      repository:   ${{ github.repository }}
