@@ -7,24 +7,7 @@ body:
     id: gh_username
     attributes:
       label: GitHub username
-      placeholder: "e.g. octocat"
-    validations:
-      required: true
-
-  - type: input
-    id: base
-    attributes:
-      label: Base PRs branch (e.g. staging)
-      placeholder: "staging"
-    validations:
-      required: true
-
-  - type: input
-    id: skip_pr
-    attributes:
-      label: Prod Hold (label name)
-      description: "Hold out of production releases."
-      value: "skip-prod"
+      placeholder: "e.g. cn-user"
     validations:
       required: true
 
