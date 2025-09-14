@@ -51,6 +51,8 @@ jobs:
       issue_opener:  ${{ github.event.issue.user.login }}
       repository:    ${{ github.repository }}
       slack_channel: C07SSBH5A3A
+      skip_pr: skip-prod
+      base_branch: staging
       target_branch: main
     secrets:
       slack_bot_token: ${{ secrets.SLACK_BOT_TOKEN }}
