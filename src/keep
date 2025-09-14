@@ -13,16 +13,21 @@ resource "aws_lambda_function" "my_lambda" {
   }
 }
 
-# hellohellohello
-# hellohellohello
-# BelloBelloBello
-# # MelloMelloMQello
-# # SelloMelloSello
+# Salamon
+# Salamon
+# Salamon
+
+# Marshmello
+# Marshmello
+# Marshmello
 
 resource "aws_apigatewayv2_api" "lambda_api" {
   name          = "lambda_api"
   protocol_type = "HTTP"
 }
+
+# WelcomeWelcome
+# WelcomeWelcome
 
 resource "aws_lambda_permission" "api_gateway_invoke" {
   statement_id  = "AllowAPIGatewayInvoke"
