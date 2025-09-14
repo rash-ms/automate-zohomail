@@ -13,9 +13,9 @@ resource "aws_lambda_function" "my_lambda" {
   }
 }
 
-# Barshmello
-# Barshmello
-# Barshmello
+# Marshmello
+# Marshmello
+# Marshmello
 
 resource "aws_apigatewayv2_api" "lambda_api" {
   name          = "lambda_api"
