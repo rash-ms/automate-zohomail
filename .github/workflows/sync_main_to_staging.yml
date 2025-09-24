@@ -15,6 +15,32 @@ jobs:
       - name: Fast-forward or open sync PR
         env:
           GH_TOKEN: ${{ github.token }}
+        # run: |
+        #   set -e
+
+        #   # Clean up any accidental local branches named origin/*
+        #   git branch -D origin/main origin/staging 2>/dev/null || true
+
+        #   # Fetch remote-tracking refs normally
+        #   git fetch --prune --no-tags origin
+
+        #   # Use explicit remote-tracking paths to avoid ambiguity
+        #   MAIN="refs/remotes/origin/main"
+        #   STAGING="refs/remotes/origin/staging"
+
+        #   # Already synced? (main ⊆ staging)
+        #   git merge-base --is-ancestor "$MAIN" "$STAGING" && exit 0
+
+        #   # Can FF staging to main? (staging ⊆ main)
+        #   if git merge-base --is-ancestor "$STAGING" "$MAIN"; then
+        #     git switch -c staging "$STAGING"
+        #     git merge --ff-only "$MAIN"
+        #     git push origin HEAD:staging
+        #   else
+        #     n=$(gh pr list --base staging --head main --state open --json number --jq '.[0].number' || true)
+        #     [ -z "${n:-}" ] && gh pr create --base staging --head main \
+        #       --title "Sync main → staging" --body "Branches diverged. Resolve conflicts here."
+        #   fi
         run: |
           set -e
           git fetch origin +refs/heads/main:origin/main +refs/heads/staging:origin/staging
