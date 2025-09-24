@@ -44,9 +44,9 @@ resource "aws_apigatewayv2_integration" "lambda_integration" {
   integration_uri  = aws_lambda_function.my_lambda.invoke_arn
 }
 
-# feat-2/Barshmello
-# feat-2/Barshmello
-# feat-2/Barshmello
+# feat-2/Parshmello
+# feat-2/Parshmello
+# feat-2/Parshmello
 
 resource "aws_apigatewayv2_route" "lambda_route_get" {
   api_id    = aws_apigatewayv2_api.lambda_api.id
