@@ -23,6 +23,8 @@ jobs:
       trunk_branch: main                  # change if your trunk isn’t 'main'
       pr_head:      ${{ github.event.pull_request.head.ref }}
       repository:   ${{ github.repository }}
+      pr_number: ${{ github.event.pull_request.number }}
+
     secrets: inherit
     concurrency:
       group: pr-gate-staging
