@@ -1,0 +1,55 @@
+# Release
+
+## Overview
+The `Release` workflow automates the versioning of reusable workflows or composite actions. This workflow ensures that versioning is consistent and transparent.
+
+## How It Works
+1. Each workflow must have a corresponding `.version` file containing a version number (e.g., `v2.5.3`).
+2. On a **pull request**, the workflow validates if a new version is set and comments on the PR about which tags will be created upon merge.
+3. On a **merge to main**, the workflow:
+   - Reads each `.version` file.
+   - Creates a tag for the specific version (e.g., `terraform/v2.5.3`).
+   - Updates the major version tag (e.g., `terraform/v2`).
+
+## Workflow Inputs
+| Input                 | Description | Default |
+|----------------------|------------|---------|
+| `version_files_pattern` | Glob pattern to match versioning files. | `*.version` |
+| `main_branch` | The name of the main release branch. | `main` |
+| `fail_on_no_changes` | If `true`, the workflow fails when no version changes are detected. | `true` |
+
+## PR Validation Step
+When a PR is opened or updated, the workflow:
+- Checks the `.version` files.
+- Comments on the PR indicating whether new tags will be created or if no version updates are detected.
+- Fails if no changes are detected and `fail_on_no_changes` is set to `true`.
+
+## Tag Creation Step
+When a PR is merged to the `main` branch:
+- The workflow reads the `.version` files.
+- If a new version is found, it creates a new GitHub release tag.
+- The major version tag (e.g., `v2`) is updated to point to the latest release.
+
+## Usage
+
+See [release-workflows.yml](../.github/workflows/release-workflows.yml)
+
+```yaml
+name: Release
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/*.yml"
+  push:
+    branches:
+      - main
+
+jobs:
+  release:
+    uses: CondeNast/global-workflows/.github/workflows/release.yml@v1
+    with:
+      version_files_pattern: "*.version"
+      main_branch: main
+      fail_on_no_changes: false
+```
