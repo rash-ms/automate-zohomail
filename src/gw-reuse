@@ -1,0 +1,398 @@
+on:
+  workflow_call:
+    inputs:
+      working_dir:
+        description: "The path to the module terraform configuration files"
+        required: false
+        default: .
+        type: string
+      version:
+        description: "The version of Terraform to use"
+        type: string
+        default: "~1.2.6"
+      environment_plan:
+        description: "The prefix of the GitHub environment for the plan"
+        required: false
+        type: string
+      environment_apply:
+        description: "The prefix of the GitHub environment for the apply"
+        required: true
+        type: string
+      main_branch:
+        type: string
+        default: main
+      account_id:
+        type: string
+        required: true
+      assume_admin:
+        type: string
+        required: false
+        default: false
+      tenant_name:
+        type: string
+        required: false
+        default: ""
+      infra_dir:
+        type: string
+        required: true
+        description: "The path to the module terraform tfvars files"
+      aws_default_region:
+        description: "The AWS region for the plan and apply"
+        type: string
+        default: "eu-west-1"
+        required: true
+      enable_branch_apply:
+        type: boolean
+        required: false
+        default: false
+      retention_days:
+        type: number
+        required: false
+        default: 1
+      enable_kubernetes_provider:
+        type: boolean
+        required: false
+        default: false
+      kubernetes_cluster_name:
+        type: string
+        required: false
+      shared_mode:
+        type: boolean
+        required: false
+        default: false
+      session_duration:
+        type: string
+        required: false
+        description: The duration of the session in seconds, only available for Cloud Platform admin roles.
+        default: "3600"
+      runner:
+        type: string
+        required: false
+        description: "The runner to use for the job"
+        default: ubuntu-latest
+    secrets:
+      terraform_modules_deploy_key:
+        required: false
+      dd_api_key:
+        required: false
+      dd_app_key:
+        required: false
+      mongodb_atlas_public_key:
+        required: false
+      mongodb_atlas_private_key:
+        required: false
+      confluent_cloud_api_key:
+        required: false
+      confluent_cloud_api_secret:
+        required: false
+      snyk_api_key:
+        required: false
+      tf_env_vars:
+        required: false
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  DD_API_KEY: ${{ secrets.dd_api_key }}
+  DD_APP_KEY: ${{ secrets.dd_app_key }}
+  MONGODB_ATLAS_PUBLIC_KEY: ${{ secrets.mongodb_atlas_public_key }}
+  MONGODB_ATLAS_PRIVATE_KEY: ${{ secrets.mongodb_atlas_private_key }}
+  CONFLUENT_CLOUD_API_KEY: ${{ secrets.confluent_cloud_api_key }}
+  CONFLUENT_CLOUD_API_SECRET: ${{ secrets.confluent_cloud_api_secret }}
+  SNYK_API_KEY: ${{ secrets.snyk_api_key }}
+  AWS_REGION: ${{ inputs.aws_default_region }}
+
+jobs:
+  setup:
+    name: Setup
+    runs-on: ${{ inputs.runner }}
+    outputs:
+      infra_dirs: ${{ steps.terraform_modules.outputs.infra_dirs }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Discover Terraform modules
+        id: terraform_modules
+        run: |
+          infra_dir=()
+          module_dirs=($(find "${{ inputs.working_dir }}/${{ inputs.infra_dir }}" -mindepth 1 -maxdepth 1 -type d))
+          if [ ${#module_dirs[@]} -eq 0 ]; then
+            infra_dir+=(".")
+          else
+            for module_dir in "${module_dirs[@]}"; do
+              module=$(basename "$module_dir")
+              sub_dirs=($(find "$module_dir" -mindepth 1 -maxdepth 1 -type d))
+              if [ ${#sub_dirs[@]} -gt 0 ]; then
+                for sub_dir in "${sub_dirs[@]}"; do
+                  nested_dirs=($(find "$sub_dir" -mindepth 1 -maxdepth 1 -type d))
+                  if [ ${#nested_dirs[@]} -gt 0 ]; then
+                    for nested_dir in "${nested_dirs[@]}"; do
+                      infra_dir+=("$module/$(basename "$sub_dir")/$(basename "$nested_dir")")
+                    done
+                  else
+                    infra_dir+=("$module/$(basename "$sub_dir")")
+                  fi
+                done
+              else
+                infra_dir+=("$module")
+              fi
+            done
+          fi
+
+          echo "Infra Directories: ${infra_dir[@]}"
+          
+          infra_dirs_json=$(printf '%s\n' "${infra_dir[@]}" | jq -R . | jq -s -c .)
+          echo "infra_dirs=${infra_dirs_json}" >> $GITHUB_OUTPUT
+
+  plan:
+    needs: 
+      - setup
+    name: Terraform Plan
+    runs-on: ${{ inputs.runner }}
+    environment: ${{ inputs.environment_plan }}
+    strategy:
+      fail-fast: false
+      matrix:
+        infra_dir: ${{ fromJSON(needs.setup.outputs.infra_dirs) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup
+        id: setup
+        run: |
+          if [[ "${{ matrix.infra_dir }}" == "." ]]; then
+            module_name=$(basename "${{ inputs.infra_dir }}")
+            tfvars_path="${{ inputs.working_dir }}/${{ inputs.infra_dir }}"
+            artifact_name_suffix="${{ inputs.infra_dir }}"
+          else
+            module_name=$(basename "${{ matrix.infra_dir }}")
+            tfvars_path="${{ inputs.working_dir }}/${{ inputs.infra_dir }}/${{ matrix.infra_dir }}"
+            artifact_name_suffix="${{ inputs.infra_dir }}-${{ matrix.infra_dir }}"
+          fi
+
+          # Sanitize artifact name by replacing all '/' with '-'
+          safe_artifact_name_suffix="${artifact_name_suffix//\//-}"
+
+          module_path="${{ inputs.working_dir }}/terraform/$module_name"
+
+          artifact_name="${{ github.workflow }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ hashFiles(format('{0}/{1}', inputs.working_dir, inputs.infra_dir)) }}-${safe_artifact_name_suffix}.plan"
+          plan_name="${module_name}.plan"
+
+          echo "module_name=$module_name"
+          echo "module_path=$module_path"
+          echo "tfvars_path=$tfvars_path"
+          echo "artifact_name=$artifact_name"
+          echo "plan_name=$plan_name"
+
+          echo "module_name=$module_name" >> $GITHUB_OUTPUT
+          echo "module_path=$module_path" >> $GITHUB_OUTPUT
+          echo "tfvars_path=$tfvars_path" >> $GITHUB_OUTPUT
+          echo "artifact_name=$artifact_name" >> $GITHUB_OUTPUT
+          echo "plan_name=$plan_name" >> $GITHUB_OUTPUT
+
+
+      - name: Configure AWS credentials
+        uses: CondeNast/aws-credentials-action@v1
+        with:
+          account_id: ${{ inputs.account_id }}
+          read_only_role: true
+          aws_region: ${{ inputs.aws_default_region }}
+          assume_admin: ${{ inputs.assume_admin }}
+          tenant_name: ${{ inputs.tenant_name }}
+          shared_mode: ${{ inputs.shared_mode }}
+
+      - uses: hashicorp/setup-terraform@v3
+        name: Setup Terraform
+        with:
+          terraform_version: ${{ inputs.version }}
+          terraform_wrapper: false
+
+      - name: Mask secrets tf_env_vars values
+        run: |
+          echo "${{ secrets.tf_env_vars }}" | while IFS= read -r line ; do
+            value="${line#*=}"
+            echo "::add-mask::$value"
+          done
+      
+      - name: Write tf_env_vars to GITHUB_ENV file
+        run: |
+          cat > $GITHUB_ENV << EOF
+          ${{ secrets.tf_env_vars }}
+          EOF
+
+      - name: Set Up Terraform Modules Deploy Key
+        run: |
+          if [[ -n "${{ secrets.terraform_modules_deploy_key }}" ]]; then
+            echo "INFO: secrets.terraform_modules_deploy_key has been provided, setting up..."
+            mkdir -p $HOME/.ssh
+            echo "${{ secrets.terraform_modules_deploy_key }}" > $HOME/.ssh/id_ed25519
+            chmod 400 $HOME/.ssh/id_ed25519
+            ssh-keyscan github.com >> $HOME/.ssh/known_hosts
+          else
+            echo "INFO: secrets.terraform_modules_deploy_key has not been provided, nothing to do."
+          fi
+
+      - name: set up kubernetes and helm providers
+        if: ${{ inputs.enable_kubernetes_provider == true && inputs.kubernetes_cluster_name != '' }}
+        run: |
+          aws eks update-kubeconfig --name ${{ inputs.kubernetes_cluster_name }} --region ${{ inputs.aws_default_region }}
+
+      - name: Terraform Format
+        run: |
+          terraform fmt -diff=true -write=false -check=true .
+        working-directory: ${{ steps.setup.outputs.module_path }}
+
+      - name: Initialise Terraform
+        run: |
+          terraform init -backend-config="../../../${{ steps.setup.outputs.tfvars_path }}/backend.tfvars"
+        working-directory: ${{ steps.setup.outputs.module_path }}
+
+      - name: Terraform Validate
+        run: |
+          terraform validate
+          if ! grep -qr 'backend "s3"'; then
+            echo -e "\033[31m ERROR: The backend does not contain 'backend \"s3\"'. \033[0m"
+          fi
+        working-directory: ${{ steps.setup.outputs.module_path }}
+
+      - name: Terraform Plan
+        id: plan
+        run: |
+          terraform plan -lock-timeout=30s -var-file="../../../${{ steps.setup.outputs.tfvars_path }}/terraform.tfvars" -out="${{ steps.setup.outputs.plan_name }}"
+        working-directory: ${{ steps.setup.outputs.module_path }}
+
+      - name: Terraform Plan Summary
+        run: |
+          echo "# Terraform Plan" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          terraform show -no-color "${{ steps.setup.outputs.plan_name }}" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+        working-directory: ${{ steps.setup.outputs.module_path }}
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.setup.outputs.artifact_name }}
+          path: ${{ steps.setup.outputs.module_path }}/${{ steps.setup.outputs.plan_name }}
+          retention-days: ${{ inputs.retention_days}}
+
+  apply:
+    needs: 
+      - setup
+      - plan
+    if: ${{ github.ref_name == inputs.main_branch || inputs.enable_branch_apply == true }}
+    name: Terraform Apply
+    runs-on: ${{ inputs.runner }}
+    environment: ${{ inputs.environment_apply }}
+    strategy:
+      fail-fast: false
+      matrix:
+        infra_dir: ${{ fromJSON(needs.setup.outputs.infra_dirs) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup
+        id: setup
+        run: |
+          if [[ "${{ matrix.infra_dir }}" == "." ]]; then
+            module_name=$(basename "${{ inputs.infra_dir }}")
+            tfvars_path="${{ inputs.working_dir }}/${{ inputs.infra_dir }}"
+            artifact_name_suffix="${{ inputs.infra_dir }}"
+          else
+            module_name=$(basename "${{ matrix.infra_dir }}")
+            tfvars_path="${{ inputs.working_dir }}/${{ inputs.infra_dir }}/${{ matrix.infra_dir }}"
+            artifact_name_suffix="${{ inputs.infra_dir }}-${{ matrix.infra_dir }}"
+          fi
+
+          # Sanitize artifact name by replacing all '/' with '-'
+          safe_artifact_name_suffix="${artifact_name_suffix//\//-}"
+
+          module_path="${{ inputs.working_dir }}/terraform/$module_name"
+
+          artifact_name="${{ github.workflow }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ hashFiles(format('{0}/{1}', inputs.working_dir, inputs.infra_dir)) }}-${safe_artifact_name_suffix}.plan"
+          plan_name="${module_name}.plan"
+
+          echo "module_name=$module_name"
+          echo "module_path=$module_path"
+          echo "tfvars_path=$tfvars_path"
+          echo "artifact_name=$artifact_name"
+          echo "plan_name=$plan_name"
+
+          echo "module_name=$module_name" >> $GITHUB_OUTPUT
+          echo "module_path=$module_path" >> $GITHUB_OUTPUT
+          echo "tfvars_path=$tfvars_path" >> $GITHUB_OUTPUT
+          echo "artifact_name=$artifact_name" >> $GITHUB_OUTPUT
+          echo "plan_name=$plan_name" >> $GITHUB_OUTPUT
+      
+      - name: Configure AWS credentials
+        uses: CondeNast/aws-credentials-action@v1
+        with:
+          account_id: ${{ inputs.account_id }}
+          read_only_role: false
+          aws_region: ${{ inputs.aws_default_region }}
+          assume_admin: ${{ inputs.assume_admin }}
+          tenant_name: ${{ inputs.tenant_name }}
+
+      - uses: hashicorp/setup-terraform@v3
+        name: Setup Terraform
+        with:
+          terraform_version: ${{ inputs.version }}
+          terraform_wrapper: false
+
+      - name: Mask secrets tf_env_vars values
+        run: |
+          echo "${{ secrets.tf_env_vars }}" | while IFS= read -r line ; do
+            value="${line#*=}"
+            echo "::add-mask::$value"
+          done
+
+      - name: Write tf_env_vars to GITHUB_ENV file
+        run: |
+          cat > $GITHUB_ENV << EOF
+          ${{ secrets.tf_env_vars }}
+          EOF
+
+      - name: Set Up Terraform Modules Deploy Key
+        run: |
+          if [[ -n "${{ secrets.terraform_modules_deploy_key }}" ]]; then
+            echo "INFO: secrets.terraform_modules_deploy_key has been provided, setting up..."
+            mkdir -p $HOME/.ssh
+            echo "${{ secrets.terraform_modules_deploy_key }}" > $HOME/.ssh/id_ed25519
+            chmod 400 $HOME/.ssh/id_ed25519
+            ssh-keyscan github.com >> $HOME/.ssh/known_hosts
+          else
+            echo "INFO: secrets.terraform_modules_deploy_key has not been provided, nothing to do."
+          fi
+
+      - name: Download Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.setup.outputs.artifact_name }}
+          path: ${{ steps.setup.outputs.module_path }}
+
+      - name: Initialise Terraform
+        run: |
+          terraform init -backend-config="../../../${{ steps.setup.outputs.tfvars_path }}/backend.tfvars"
+        working-directory: ${{ steps.setup.outputs.module_path }}
+
+      - name: Check Terraform Plan for Changes
+        id: plan_status
+        run: |
+          if terraform show -json "${{ steps.setup.outputs.plan_name }}" | jq -e '
+            [.resource_changes[]? | select(.change.actions != ["no-op"])] | length == 0
+          ' > /dev/null; then
+            echo "No changes detected. Skipping apply step."
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+          else
+            echo "Changes detected"
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+          fi
+        working-directory: ${{ steps.setup.outputs.module_path }}
+
+      - name: Terraform Apply
+        if: steps.plan_status.outputs.has_changes == 'true'
+        run: |
+          terraform apply "${{ steps.setup.outputs.plan_name }}"
+        working-directory: ${{ steps.setup.outputs.module_path }}

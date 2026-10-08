@@ -1,0 +1,15 @@
+name: Release
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/*.yml"
+  push:
+    branches:
+      - main
+
+jobs:
+  release:
+    uses: ./.github/workflows/release.yml
+    with:
+      version_files_pattern: "*.version"
