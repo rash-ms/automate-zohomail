@@ -1,0 +1,108 @@
+name: Release
+
+on:
+  workflow_call:
+    inputs:
+      version_files_pattern:
+        description: Glob pattern to match versioning files.
+        required: false
+        type: string
+        default: "*.version"
+      main_branch:
+        description: The name of the branch where releases are published. Defaults to 'main'.
+        required: false
+        type: string
+        default: main
+      fail_on_no_changes:
+        description: If set to 'true', the workflow will fail when no version-related changes are detected.
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  validate-versions-update:
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.merged == false }}
+    name: Validate Version Update
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: fetch git tags
+        run: git fetch --tags origin
+
+      - name: Get version files
+        run: |
+          PR_COMMENT="🚀 Release tracker\n\n"
+          TAGS_TO_CREATE=false
+          for version_file in $(find . -type f -name ${{ inputs.version_files_pattern }})
+          do
+            version=$(cat $version_file)
+            major_version=$(echo "$version" | cut -d'.' -f1)
+
+            echo "version in $version_file: $version"
+            if [ $(git tag -l "$version") ]; then
+              echo "The tag $version exists, nothing to do"
+            else
+              TAGS_TO_CREATE=true
+              echo "The tag $version will be created on merge"
+              PR_COMMENT+="✅ The tag \`$version\` will be created on merge\n"
+              PR_COMMENT+="✅ The tag \`$major_version\` will be created on merge\n"
+            fi
+          done
+
+          if [[ $TAGS_TO_CREATE == "false" ]]; then
+            PR_COMMENT+="❌ No tags to be created\n"
+
+            if [[ "${{ inputs.fail_on_no_changes }}" == "true" ]]; then
+              PR_COMMENT+="\n> Workflow marked as failed as there are no detected changes on versioning files."
+              echo   -e "$PR_COMMENT" > version_comment.txt
+              exit 1
+            fi
+          fi
+
+          echo   -e "$PR_COMMENT" > version_comment.txt
+    
+      - name: PR comment
+        if: always()
+        uses: thollander/actions-comment-pull-request@v3
+        with:
+          file-path: version_comment.txt
+          reactions: rocket
+          comment-tag: 🚀 Release tracker
+
+  create-release-tags:
+    if: ${{ github.ref_name == inputs.main_branch }}
+    name: Create Release Tags
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: fetch git tags
+        run: git fetch --tags origin
+
+      - name: Creating tags
+        run: |
+          echo '### 🚀 Release tracker' >> $GITHUB_STEP_SUMMARY
+          echo '' >> $GITHUB_STEP_SUMMARY
+
+          for version_file in $(find . -type f -name ${{ inputs.version_files_pattern }})
+          do
+            version=$(cat $version_file)
+            major_version=$(echo "$version" | cut -d'.' -f1)
+
+            echo "version in $version_file: $version"
+            if [ $(git tag -l "$version") ]; then
+              echo "The tag $version exists, nothing to do"
+            else
+              echo "Creating tag $version"
+              gh release create $version --generate-notes
+              echo "Tag $version created" >> $GITHUB_STEP_SUMMARY
+
+              echo "Creating tag $major_version"
+              gh release delete $major_version --cleanup-tag --yes || true
+              gh release create $major_version --generate-notes
+              echo "Tag $major_version created" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
+        env:
+          GH_TOKEN: ${{ github.token }}
